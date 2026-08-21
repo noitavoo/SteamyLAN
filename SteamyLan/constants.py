@@ -2,7 +2,7 @@ from __future__ import annotations
 
 APP_NAME = "SteamyLAN"
 APP_TAGLINE = "Play together through Steam. No router setup needed."
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.0.0"
 APP_DEVELOPER = "noitavoo"
 DEFAULT_APP_ID = 480
 APP_ID = DEFAULT_APP_ID

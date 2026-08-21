@@ -642,6 +642,57 @@ QLabel#ActionStatus {
     padding: 8px 10px;
     font-size: 12px;
 }
+QScrollArea#SettingsScroll {
+    background-color: transparent;
+    border: none;
+}
+QFrame#SettingsCard {
+    background-color: #0d1727;
+    border: 1px solid #26364e;
+    border-radius: 12px;
+}
+QFrame#SettingsDivider {
+    color: #26364e;
+    background-color: #26364e;
+    border: none;
+    max-height: 1px;
+}
+QLabel#SettingsTitle {
+    color: #f1f5fb;
+    font-size: 15px;
+    font-weight: 700;
+}
+QLabel#SettingsSubheading {
+    color: #e4ebf6;
+    font-size: 13px;
+    font-weight: 650;
+}
+QLabel#SettingsHelp {
+    color: #8797ad;
+    font-size: 12px;
+}
+QLabel#FieldLabel {
+    color: #c7d2e2;
+    font-size: 12px;
+    font-weight: 600;
+}
+QLabel#PortCountGood,
+QLabel#PortCountError {
+    border-radius: 7px;
+    padding: 6px 9px;
+    font-size: 11px;
+    font-weight: 600;
+}
+QLabel#PortCountGood {
+    color: #bfe9d0;
+    background-color: #10251d;
+    border: 1px solid #2f654d;
+}
+QLabel#PortCountError {
+    color: #ffc1bd;
+    background-color: #2b181a;
+    border: 1px solid #713940;
+}
 QScrollArea#ChatMessagesScroll {
     background-color: #0b1320;
     border: 1px solid #202e43;

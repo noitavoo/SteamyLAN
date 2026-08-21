@@ -6,7 +6,15 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialogButtonBox,
+    QMainWindow,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from SteamyLan.models import ChatMessage, DetectedService, Endpoint, SessionConfig, SharedServiceSpec
 from SteamyLan.ui.main_window import MainWindow, ServerSettingsDialog
@@ -64,24 +72,58 @@ class QtBehaviorTests(unittest.TestCase):
         )
         dialog = ServerSettingsDialog(session, [second])
         try:
-            self.assertEqual(dialog.add_program_ports.text(), "Add these ports to the server")
-            self.assertEqual(dialog.use_program_ports.text(), "Use only these ports")
+            self.assertEqual(dialog.windowTitle(), "Edit Live Server")
+            self.assertEqual(dialog.add_program_ports.text(), "Add to current port list")
+            self.assertEqual(dialog.use_program_ports.text(), "Replace list with detected ports")
             self.assertEqual(dialog.add_program_ports.objectName(), "PortAction")
             self.assertEqual(dialog.use_program_ports.objectName(), "PortAction")
             self.assertFalse(bool(dialog.add_program_ports.property("applied")))
             self.assertFalse(bool(dialog.use_program_ports.property("applied")))
+            self.assertIn("Only your Steam friends", dialog.visibility_help.text())
+            self.assertIn("1 of 32 ports selected", dialog.port_count_status.text())
             dialog.program.setCurrentIndex(1)
+            self.assertIn("TCP 1234", dialog.program_summary.text())
+            self.assertIn("UDP 5678", dialog.program_summary.text())
             dialog._append_program()
             self.assertEqual(dialog.tcp_ports.text(), "1234")
             self.assertEqual(dialog.udp_ports.text(), "5678")
             self.assertEqual(dialog._endpoint_ips[("TCP", 1234)], "10.0.0.1")
             self.assertIn("Added 1 new port", dialog.program_action_status.text())
+            self.assertIn("2 of 32 ports selected", dialog.port_count_status.text())
             self.assertTrue(bool(dialog.add_program_ports.property("applied")))
             self.assertFalse(bool(dialog.use_program_ports.property("applied")))
 
             dialog._replace_program()
             self.assertFalse(bool(dialog.add_program_ports.property("applied")))
             self.assertTrue(bool(dialog.use_program_ports.property("applied")))
+        finally:
+            dialog.close()
+
+    def test_server_settings_explains_access_and_validates_ports_live(self):
+        dialog = ServerSettingsDialog(FakeHostedSession(), [])
+        try:
+            dialog.visibility.setCurrentIndex(dialog.visibility.findData("public"))
+            self.assertIn("public list", dialog.visibility_help.text())
+
+            dialog.password_enabled.setChecked(True)
+            self.assertTrue(dialog.password.isEnabled())
+            self.assertIn("at least 4 characters", dialog.password.placeholderText())
+
+            dialog.tcp_ports.setText("not-a-port")
+            self.assertEqual(dialog.port_count_status.objectName(), "PortCountError")
+            self.assertIn("Check the port list", dialog.port_count_status.text())
+
+            dialog.tcp_ports.setText("27015")
+            dialog.udp_ports.setText("27015-27016")
+            self.assertEqual(dialog.port_count_status.objectName(), "PortCountGood")
+            self.assertIn("3 of 32 ports selected", dialog.port_count_status.text())
+
+            buttons = dialog.findChild(QDialogButtonBox)
+            self.assertIsNotNone(buttons)
+            self.assertEqual(
+                buttons.button(QDialogButtonBox.StandardButton.Save).text(),
+                "Apply changes",
+            )
         finally:
             dialog.close()
 
@@ -129,6 +171,56 @@ class QtBehaviorTests(unittest.TestCase):
             self.app.processEvents()
             self.assertEqual(bar.value(), old_value)
             self.assertEqual(window._chat_unread, 1)
+        finally:
+            scroll.close()
+            window.hide()
+            window.deleteLater()
+
+    def test_new_chat_message_follows_when_reader_is_at_bottom(self):
+        now = time.time()
+        messages = [
+            ChatMessage(index + 1, f"Player {index + 1}", f"Message {index + 1} " * 8, now + index)
+            for index in range(40)
+        ]
+        window = MainWindow.__new__(MainWindow)
+        QMainWindow.__init__(window)
+        window.session = FakeChatSession(messages)
+        window.steam = FakeSteamService()
+        window._chat_following = True
+        window._chat_unread = 0
+        window._restoring_chat_scroll = False
+        window._chat_scroll_generation = 0
+        window._chat_rendered_keys = ()
+        window._chat_latest_button = QPushButton()
+
+        holder = QWidget()
+        window._chat_messages_layout = QVBoxLayout(holder)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.resize(420, 180)
+        scroll.setWidget(holder)
+        scroll.show()
+        window._chat_scroll_area = scroll
+        scroll.verticalScrollBar().valueChanged.connect(window._chat_scroll_changed)
+        try:
+            window._render_chat_messages()
+            for _ in range(4):
+                self.app.processEvents()
+            bar = scroll.verticalScrollBar()
+            self.assertGreater(bar.maximum(), 0)
+            self.assertEqual(bar.value(), bar.maximum())
+
+            old_max = bar.maximum()
+            window.session.chat_messages += (
+                ChatMessage(99, "New player", "A newly arrived message " * 8, now + 100),
+            )
+            window._render_chat_messages()
+            for _ in range(4):
+                self.app.processEvents()
+            self.assertGreater(bar.maximum(), old_max)
+            self.assertEqual(bar.value(), bar.maximum())
+            self.assertTrue(window._chat_following)
+            self.assertEqual(window._chat_unread, 0)
         finally:
             scroll.close()
             window.hide()

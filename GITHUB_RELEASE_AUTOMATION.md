@@ -1,27 +1,35 @@
 # Automatic GitHub releases
 
-`.github/workflows/release.yml` builds and publishes a Windows release for every **pushed commit on the repository's default branch**. A local commit does not reach GitHub Actions until it is pushed.
+`.github/workflows/release.yml` builds and publishes a Windows release when a pushed commit on `main` changes the application code or a runtime/build dependency. Changes limited to documentation, tests, screenshots, icons, or other images do not trigger a release. A local commit does not reach GitHub Actions until it is pushed.
+
+Automatic release paths include the Python application under `SteamyLan/`, `run.py`, the updater helper, dependency files, `pyproject.toml`, and the Steam runtime DLL. The workflow can still be started manually from GitHub Actions when a recovery build is needed.
 
 Each successful run:
 
 1. checks out the exact pushed commit;
 2. installs Python 3.14.7 and the pinned SteamyLAN build dependencies;
 3. runs the full unit/regression test suite;
-4. stamps the packaged application with `<project version>.<GitHub run number>` (for example `1.3.0.42`);
+4. resolves and stamps the next three-part release version;
 5. builds the Windows `SteamyLAN.exe` with PyInstaller;
 6. trims packaging-only/debug files from the runtime build;
 7. creates a folder named exactly `SteamyLAN`;
-8. creates a versioned asset such as `SteamyLAN_v1.3.0.42.zip`, whose single top-level folder is exactly `SteamyLAN/`;
-9. creates the matching GitHub Release/tag (for example `v1.3.0.42`) and uploads the matching versioned ZIP.
+8. creates a versioned asset such as `SteamyLAN_v1.0.0.zip`, whose single top-level folder is exactly `SteamyLAN/`;
+9. creates the matching GitHub Release/tag (for example `v1.0.0`) and uploads the matching versioned ZIP.
 
-The four-part build version is deliberate. SteamyLAN's updater reads the latest GitHub release tag, so the executable and release tag must advance together. This prevents an automatic release from making the app think it is permanently out of date.
+Versioning starts again at `1.0.0` and uses one decimal patch digit:
+
+```text
+1.0.0 → 1.0.1 → … → 1.0.9 → 1.1.0 → 1.1.1
+```
+
+Only three-part versions are published. Legacy releases are ignored until the new `v1.0.0` baseline has been published. After that, the workflow reads the latest release in the new sequence, advances it with the rule above, and stamps the same version into the executable. Rebuilding a commit that already has a three-part release tag reuses that version instead of incrementing it.
 
 ## Release ZIP layout
 
 The downloadable asset is always:
 
 ```text
-SteamyLAN_v1.3.0.42.zip
+SteamyLAN_v1.0.0.zip
 └── SteamyLAN/
     ├── SteamyLAN.exe
     ├── steam_api64.dll
@@ -66,4 +74,4 @@ This allows the workflow's `GITHUB_TOKEN` to create release tags/releases and up
 
 ## Manual rebuild
 
-The workflow also supports **Run workflow** from the GitHub Actions page. A rerun of the same workflow run reuses the same tag and replaces the existing versioned ZIP asset instead of creating a duplicate release.
+The workflow also supports **Run workflow** from the GitHub Actions page. Rebuilding a commit that already has a release reuses its tag and replaces the existing versioned ZIP asset instead of creating a duplicate release.

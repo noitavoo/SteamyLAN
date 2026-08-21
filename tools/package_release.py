@@ -11,7 +11,7 @@ from pathlib import Path
 SKIP_DIRS = {"__pycache__", ".pytest_cache"}
 SKIP_SUFFIXES = {".pyc", ".pyo", ".pdb", ".exp", ".lib"}
 SKIP_NAMES = {"Thumbs.db", ".DS_Store"}
-VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:\.\d+)?$")
+VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--version",
         required=True,
-        help="Release version without the leading v, for example 1.3.0.1",
+        help="Three-part release version without the leading v, for example 1.0.0",
     )
     return parser.parse_args()
 

@@ -725,89 +725,145 @@ class ServerSettingsDialog(QDialog):
             (endpoint.protocol.upper(), int(endpoint.port)): endpoint.local_ip
             for endpoint in self.current_service.endpoints
         }
-        self.setWindowTitle("Server Settings")
-        self.setMinimumWidth(640)
+        self.setWindowTitle("Edit Live Server")
+        self.setMinimumSize(680, 620)
+        self.resize(720, 760)
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 18, 20, 16)
-        root.setSpacing(9)
+        root.setSpacing(12)
 
-        title = QLabel("Server settings")
+        title = QLabel("Edit live server")
         title.setObjectName("Heading")
         root.addWidget(title)
-        hint = QLabel("Changes are applied to the active Steam lobby. Existing members stay connected while their shared ports update.")
+        hint = QLabel(
+            "Update who can join and which game ports are shared. Connected players stay in the lobby while changes are applied."
+        )
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
         root.addWidget(hint)
 
+        settings_scroll = QScrollArea()
+        settings_scroll.setObjectName("SettingsScroll")
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        settings_body = QWidget()
+        settings_layout = QVBoxLayout(settings_body)
+        settings_layout.setContentsMargins(0, 2, 6, 2)
+        settings_layout.setSpacing(12)
+        settings_scroll.setWidget(settings_body)
+        root.addWidget(settings_scroll, 1)
+
+        lobby_card, lobby = self._settings_card(
+            "Lobby and access",
+            "Choose how the server appears in Steam and who is allowed to join.",
+        )
         form = QGridLayout()
-        form.setHorizontalSpacing(10)
-        form.setVerticalSpacing(8)
+        form.setColumnStretch(1, 1)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
         self.name = QLineEdit(self.config.lobby_name)
         self.name.setMaxLength(80)
-        form.addWidget(QLabel("Server name"), 0, 0)
+        self.name.setClearButtonEnabled(True)
+        self.name.setPlaceholderText("Name shown to other players")
+        name_label = QLabel("Server name")
+        name_label.setBuddy(self.name)
+        form.addWidget(name_label, 0, 0)
         form.addWidget(self.name, 0, 1)
         self.visibility = QComboBox()
-        self.visibility.addItem("Friends Only", VISIBILITY_FRIENDS)
-        self.visibility.addItem("Public", VISIBILITY_PUBLIC)
-        self.visibility.addItem("Invite Only", VISIBILITY_INVITE)
+        self.visibility.addItem("Friends only", VISIBILITY_FRIENDS)
+        self.visibility.addItem("Public listing", VISIBILITY_PUBLIC)
+        self.visibility.addItem("Invite only", VISIBILITY_INVITE)
         self.visibility.setCurrentIndex(max(0, self.visibility.findData(self.config.visibility)))
-        form.addWidget(QLabel("Visibility"), 1, 0)
+        visibility_label = QLabel("Who can find it")
+        visibility_label.setBuddy(self.visibility)
+        form.addWidget(visibility_label, 1, 0)
         form.addWidget(self.visibility, 1, 1)
         self.max_members = QSpinBox()
         self.max_members.setRange(2, 250)
         self.max_members.setValue(self.config.max_members)
-        form.addWidget(QLabel("Player limit"), 2, 0)
+        self.max_members.setSuffix(" players")
+        player_label = QLabel("Lobby capacity")
+        player_label.setBuddy(self.max_members)
+        form.addWidget(player_label, 2, 0)
         form.addWidget(self.max_members, 2, 1)
-        root.addLayout(form)
+        lobby.addLayout(form)
 
-        self.password_enabled = QCheckBox("Password protected")
+        self.visibility_help = QLabel()
+        self.visibility_help.setObjectName("SettingsHelp")
+        self.visibility_help.setWordWrap(True)
+        lobby.addWidget(self.visibility_help)
+        self.visibility.currentIndexChanged.connect(self._update_visibility_help)
+        self._update_visibility_help()
+
+        access_divider = QFrame()
+        access_divider.setObjectName("SettingsDivider")
+        access_divider.setFrameShape(QFrame.Shape.HLine)
+        lobby.addWidget(access_divider)
+
+        self.password_enabled = QCheckBox("Require a password to join")
         self.password_enabled.setChecked(bool(self.config.password_salt))
-        root.addWidget(self.password_enabled)
+        lobby.addWidget(self.password_enabled)
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         self.password.setMaxLength(128)
-        self.password.setPlaceholderText("Leave blank to keep the current password" if self.config.password_salt else "Password (4+ characters)")
-        self.password.setEnabled(self.password_enabled.isChecked())
-        self.password_enabled.toggled.connect(self.password.setEnabled)
-        root.addWidget(self.password)
+        self.password.setClearButtonEnabled(True)
+        lobby.addWidget(self.password)
+        self.password_help = QLabel()
+        self.password_help.setObjectName("SettingsHelp")
+        self.password_help.setWordWrap(True)
+        lobby.addWidget(self.password_help)
+        self.password_enabled.toggled.connect(self._update_password_state)
+        self._update_password_state(self.password_enabled.isChecked())
 
-        self.static_code = QCheckBox("Use a static share code for this server")
+        self.static_code = QCheckBox("Keep the same share code when this server is hosted again")
         self.static_code.setChecked(session.static_share_code_enabled)
-        self.static_code.setToolTip("A static code remains the same when this server is hosted again from this computer.")
-        root.addWidget(self.static_code)
+        self.static_code.setToolTip("Useful for a trusted group that reconnects to this server regularly.")
+        lobby.addWidget(self.static_code)
+        static_help = QLabel(
+            "Turn this off if you prefer a new share code each time. Existing codes stop working when the server is recreated."
+        )
+        static_help.setObjectName("SettingsHelp")
+        static_help.setWordWrap(True)
+        lobby.addWidget(static_help)
+        settings_layout.addWidget(lobby_card)
 
-        program_title = QLabel("Program and shared ports")
-        program_title.setObjectName("Section")
-        root.addWidget(program_title)
+        ports_card, ports_card_layout = self._settings_card(
+            "Programs and ports",
+            "Select a running program to use its detected ports, or edit the final TCP and UDP lists yourself.",
+        )
 
+        detected_label = QLabel("Detected program")
+        detected_label.setObjectName("FieldLabel")
+        ports_card_layout.addWidget(detected_label)
         selector_row = QHBoxLayout()
         self.program = QComboBox()
         self.program.currentIndexChanged.connect(self._update_program_summary)
         selector_row.addWidget(self.program, 1)
-        self.show_background = QCheckBox("Show background services")
+        self.show_background = QCheckBox("Include background processes")
         self.show_background.setChecked(False)
-        self.show_background.setToolTip("Background processes without a visible window are hidden by default.")
+        self.show_background.setToolTip("Show processes without a visible window, including dedicated servers and system services.")
         self.show_background.toggled.connect(self._background_toggled)
         selector_row.addWidget(self.show_background)
-        root.addLayout(selector_row)
+        ports_card_layout.addLayout(selector_row)
 
         self.program_summary = QLabel()
-        self.program_summary.setObjectName("Subtle")
+        self.program_summary.setObjectName("SettingsHelp")
         self.program_summary.setWordWrap(True)
-        root.addWidget(self.program_summary)
+        ports_card_layout.addWidget(self.program_summary)
 
         program_actions = QHBoxLayout()
-        self.add_program_ports = QPushButton("Add these ports to the server")
+        self.add_program_ports = QPushButton("Add to current port list")
         self.add_program_ports.setObjectName("PortAction")
-        self.add_program_ports.setToolTip("Keep every currently shared port and add any new ports detected for the selected program.")
+        self.add_program_ports.setToolTip("Keep the current TCP/UDP entries and add any new ports detected for this program.")
         self.add_program_ports.clicked.connect(self._append_program)
         program_actions.addWidget(self.add_program_ports, 1)
-        self.use_program_ports = QPushButton("Use only these ports")
+        self.use_program_ports = QPushButton("Replace list with detected ports")
         self.use_program_ports.setObjectName("PortAction")
-        self.use_program_ports.setToolTip("Remove the current port selection and use only ports detected for the selected program.")
+        self.use_program_ports.setToolTip("Clear the current TCP/UDP entries and use only ports detected for this program.")
         self.use_program_ports.clicked.connect(self._replace_program)
         program_actions.addWidget(self.use_program_ports, 1)
-        root.addLayout(program_actions)
+        ports_card_layout.addLayout(program_actions)
 
         # These are commands, not a persistent two-option selection.  Keep
         # their idle styling identical and only show a short confirmation on
@@ -817,33 +873,119 @@ class ServerSettingsDialog(QDialog):
         self._program_feedback_timer.setInterval(1400)
         self._program_feedback_timer.timeout.connect(self._clear_program_action_feedback)
 
-        self.program_action_status = QLabel("Choose how the selected program should change the port list.")
+        self.program_action_status = QLabel(
+            "Detected ports do not change the server until you choose an action and apply the settings."
+        )
         self.program_action_status.setObjectName("ActionStatus")
         self.program_action_status.setWordWrap(True)
-        root.addWidget(self.program_action_status)
+        ports_card_layout.addWidget(self.program_action_status)
+
+        ports_divider = QFrame()
+        ports_divider.setObjectName("SettingsDivider")
+        ports_divider.setFrameShape(QFrame.Shape.HLine)
+        ports_card_layout.addWidget(ports_divider)
+
+        final_ports = QLabel("Ports this server will share")
+        final_ports.setObjectName("SettingsSubheading")
+        ports_card_layout.addWidget(final_ports)
+        ports_help = QLabel(
+            "Most games need only the detected values. Use commas for separate ports and a hyphen for a range, such as 27015, 27020-27022."
+        )
+        ports_help.setObjectName("SettingsHelp")
+        ports_help.setWordWrap(True)
+        ports_card_layout.addWidget(ports_help)
 
         ports = QGridLayout()
+        ports.setColumnStretch(1, 1)
+        ports.setHorizontalSpacing(12)
+        ports.setVerticalSpacing(10)
         self.tcp_ports = QLineEdit(compact_port_ranges(spec.port for spec in self.config.services if spec.protocol.upper() == "TCP"))
-        self.tcp_ports.setPlaceholderText("e.g. 25565-25570")
+        self.tcp_ports.setPlaceholderText("None, or e.g. 25565-25570")
+        self.tcp_ports.setClearButtonEnabled(True)
         self.udp_ports = QLineEdit(compact_port_ranges(spec.port for spec in self.config.services if spec.protocol.upper() == "UDP"))
-        self.udp_ports.setPlaceholderText("e.g. 27015, 27020-27022")
+        self.udp_ports.setPlaceholderText("None, or e.g. 27015, 27020-27022")
+        self.udp_ports.setClearButtonEnabled(True)
         ports.addWidget(QLabel("TCP ports"), 0, 0)
         ports.addWidget(self.tcp_ports, 0, 1)
         ports.addWidget(QLabel("UDP ports"), 1, 0)
         ports.addWidget(self.udp_ports, 1, 1)
-        root.addLayout(ports)
-        range_hint = QLabel("You can also edit these fields directly. Use commas and hyphen ranges; one server can share up to 32 TCP/UDP ports.")
-        range_hint.setObjectName("Subtle")
-        range_hint.setWordWrap(True)
-        root.addWidget(range_hint)
+        ports_card_layout.addLayout(ports)
+        self.port_count_status = QLabel()
+        self.port_count_status.setWordWrap(True)
+        ports_card_layout.addWidget(self.port_count_status)
+        self.tcp_ports.textChanged.connect(self._update_port_count)
+        self.udp_ports.textChanged.connect(self._update_port_count)
+        settings_layout.addWidget(ports_card)
+        settings_layout.addStretch(1)
 
         self._populate_programs()
         self._update_program_summary()
+        self._update_port_count()
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        apply_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        apply_button.setText("Apply changes")
+        apply_button.setObjectName("Primary")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancel")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+
+    @staticmethod
+    def _settings_card(title: str, description: str) -> tuple[QFrame, QVBoxLayout]:
+        card = QFrame()
+        card.setObjectName("SettingsCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 15, 16, 16)
+        layout.setSpacing(9)
+        heading = QLabel(title)
+        heading.setObjectName("SettingsTitle")
+        layout.addWidget(heading)
+        help_text = QLabel(description)
+        help_text.setObjectName("SettingsHelp")
+        help_text.setWordWrap(True)
+        layout.addWidget(help_text)
+        return card, layout
+
+    def _update_visibility_help(self, _index: int = -1) -> None:
+        descriptions = {
+            VISIBILITY_FRIENDS: "Only your Steam friends can discover this lobby. You can still invite them directly.",
+            VISIBILITY_PUBLIC: "The lobby appears in SteamyLAN's public list and anyone with this app can request access.",
+            VISIBILITY_INVITE: "The lobby is hidden. Players need a Steam invite or the server's share code.",
+        }
+        self.visibility_help.setText(descriptions.get(str(self.visibility.currentData()), ""))
+
+    def _update_password_state(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        self.password.setEnabled(enabled)
+        if not enabled:
+            self.password.setPlaceholderText("Password protection is off")
+            self.password_help.setText("Players allowed by the visibility setting can join without entering a password.")
+        elif self.config.password_salt:
+            self.password.setPlaceholderText("Leave blank to keep the current password")
+            self.password_help.setText("Enter a new password to replace it, or leave this field blank to keep the existing password.")
+        else:
+            self.password.setPlaceholderText("Enter at least 4 characters")
+            self.password_help.setText("Players will enter this password after joining the Steam lobby.")
+
+    def _update_port_count(self, _text: str = "") -> None:
+        try:
+            tcp, udp = self._parse_current_ports()
+            total = len(tcp) + len(udp)
+            if total > 32:
+                raise ValueError("The combined TCP and UDP lists exceed the 32-port limit.")
+        except ValueError as exc:
+            self.port_count_status.setObjectName("PortCountError")
+            self.port_count_status.setText(f"Check the port list: {exc}")
+        else:
+            self.port_count_status.setObjectName("PortCountGood" if total else "PortCountError")
+            if total:
+                self.port_count_status.setText(
+                    f"{total} of 32 ports selected · {len(tcp)} TCP · {len(udp)} UDP"
+                )
+            else:
+                self.port_count_status.setText("No ports selected. Add at least one TCP or UDP port before applying changes.")
+        self._refresh_dynamic_style(self.port_count_status)
 
     @staticmethod
     def _background_service(service: DetectedService) -> bool:
@@ -885,6 +1027,12 @@ class ServerSettingsDialog(QDialog):
     def _update_program_summary(self, _index: int = -1) -> None:
         if not hasattr(self, "program_summary"):
             return
+        if _index >= 0 and hasattr(self, "program_action_status"):
+            self._program_feedback_timer.stop()
+            self._clear_program_action_feedback()
+            self.program_action_status.setText(
+                "Review the detected ports, then add them to the current list or replace the list completely."
+            )
         service = self._selected_program()
         enabled = bool(service and service.endpoints)
         self.add_program_ports.setEnabled(enabled)
@@ -892,15 +1040,19 @@ class ServerSettingsDialog(QDialog):
         if not enabled:
             self.program_summary.setText("No usable TCP or UDP ports were detected for this program.")
             return
-        tcp = sum(1 for endpoint in service.endpoints if endpoint.protocol.upper() == "TCP")
-        udp = sum(1 for endpoint in service.endpoints if endpoint.protocol.upper() == "UDP")
+        tcp_ports = compact_port_ranges(
+            endpoint.port for endpoint in service.endpoints if endpoint.protocol.upper() == "TCP"
+        )
+        udp_ports = compact_port_ranges(
+            endpoint.port for endpoint in service.endpoints if endpoint.protocol.upper() == "UDP"
+        )
         parts = []
-        if tcp:
-            parts.append(f"{tcp} TCP")
-        if udp:
-            parts.append(f"{udp} UDP")
+        if tcp_ports:
+            parts.append(f"TCP {tcp_ports}")
+        if udp_ports:
+            parts.append(f"UDP {udp_ports}")
         self.program_summary.setText(
-            f"Detected for {service.name}: {' + '.join(parts)} port{'s' if tcp + udp != 1 else ''}."
+            f"Detected for {service.name}: {' · '.join(parts)}."
         )
 
     def _selected_program(self) -> DetectedService | None:
@@ -1091,6 +1243,7 @@ class MainWindow(QMainWindow):
         self._chat_following = True
         self._chat_unread = 0
         self._restoring_chat_scroll = False
+        self._chat_scroll_generation = 0
         self._rendered_server_structure_key = None
         self._join_tab_index = 0
         self._lobby_visibility_filter = "Friends"
@@ -2989,7 +3142,13 @@ class MainWindow(QMainWindow):
         old_max = int(bar.maximum())
         old_value = int(bar.value())
         distance_from_bottom = max(0, old_max - old_value)
-        follow_latest = self._chat_following
+        # Read the scrollbar before adding widgets. Its range grows as Qt lays
+        # out the new message, which would otherwise make a reader who was at
+        # the bottom look as though they had intentionally scrolled up.
+        follow_latest = old_value >= max(0, old_max - 24)
+        self._chat_scroll_generation = getattr(self, "_chat_scroll_generation", 0) + 1
+        generation = self._chat_scroll_generation
+        self._restoring_chat_scroll = True
         messages = tuple(self.session.chat_messages[-200:])
         keys = tuple(
             (int(message.sender_id), float(message.created_at), str(message.text))
@@ -3016,23 +3175,29 @@ class MainWindow(QMainWindow):
         self._chat_rendered_keys = keys
         self._update_chat_latest_button()
 
-        def restore_chat_scroll() -> None:
-            self._restoring_chat_scroll = True
-            try:
-                if follow_latest:
-                    bar.setValue(bar.maximum())
-                    self._chat_unread = 0
-                    self._chat_following = True
-                elif incremental:
-                    # New messages were added below the viewport. Keep the
-                    # exact history position instead of pulling the reader.
-                    bar.setValue(min(old_value, bar.maximum()))
-                else:
-                    # The bounded 200-message history rolled over and widgets
-                    # were rebuilt. Preserve the reader's distance from latest.
-                    bar.setValue(max(0, bar.maximum() - distance_from_bottom))
-            finally:
-                self._restoring_chat_scroll = False
+        def restore_chat_scroll(final: bool = False) -> None:
+            if generation != self._chat_scroll_generation:
+                return
+            if follow_latest:
+                bar.setValue(bar.maximum())
+                self._chat_unread = 0
+                self._chat_following = True
+            elif incremental:
+                # New messages were added below the viewport. Keep the exact
+                # history position instead of pulling the reader.
+                bar.setValue(min(old_value, bar.maximum()))
+                self._chat_following = False
+            else:
+                # The bounded 200-message history rolled over and widgets were
+                # rebuilt. Preserve the reader's distance from latest.
+                bar.setValue(max(0, bar.maximum() - distance_from_bottom))
+                self._chat_following = False
+            if not final:
+                # Word-wrapped labels can change the range on the next layout
+                # pass. Apply the target once more after that pass completes.
+                QTimer.singleShot(0, lambda: restore_chat_scroll(True))
+                return
+            self._restoring_chat_scroll = False
             self._update_chat_latest_button()
 
         QTimer.singleShot(0, restore_chat_scroll)
@@ -3491,6 +3656,8 @@ class MainWindow(QMainWindow):
         self._chat_state_label = None
         self._chat_send_button = None
         self._chat_rendered_keys = ()
+        self._chat_scroll_generation += 1
+        self._restoring_chat_scroll = False
         scroll_bar = self.server_page.verticalScrollBar()
         old_scroll = int(scroll_bar.value())
         old_max = int(scroll_bar.maximum())

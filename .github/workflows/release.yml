@@ -1,7 +1,18 @@
 name: Build and release SteamyLAN
 
 on:
-  push: {}
+  push:
+    branches:
+      - main
+    paths:
+      - 'SteamyLan/*.py'
+      - 'SteamyLan/**/*.py'
+      - 'run.py'
+      - 'tools/update_helper.py'
+      - 'requirements.txt'
+      - 'requirements-build.txt'
+      - 'pyproject.toml'
+      - 'steam_api64.dll'
   workflow_dispatch: {}
 
 permissions:
@@ -13,16 +24,15 @@ concurrency:
 
 jobs:
   release:
-    # A normal push only publishes from the repository's default branch.
+    # Push events are already limited to program/runtime changes on main.
     # workflow_dispatch is kept as a manual recovery/rebuild option.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: windows-latest
 
     steps:
       - name: Check out commit
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Set up Python 3.14.7
         uses: actions/setup-python@v7
@@ -69,11 +79,43 @@ jobs:
         shell: pwsh
         run: python -m unittest discover -s tests -v
 
-      - name: Stamp commit build version
+      - name: Resolve and stamp release version
         id: version
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $version = python tools/stamp_build_version.py --build-number "$env:GITHUB_RUN_NUMBER"
+          $threePartTag = '^v\d+\.\d+\.\d+$'
+          $currentTag = git tag --points-at "$env:GITHUB_SHA" |
+            Where-Object { $_ -match $threePartTag } |
+            Select-Object -First 1
+
+          if ($currentTag) {
+            Write-Host "Reusing $currentTag because this commit already has a release."
+            $version = python tools/stamp_build_version.py --reuse-version "$currentTag"
+          }
+          else {
+            $releaseTags = @(
+              gh release list --limit 100 --json tagName --jq '.[].tagName' |
+                Where-Object { $_ -match $threePartTag }
+            )
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            # This explicitly starts a new sequence. Legacy tags are ignored
+            # until the new v1.0.0 baseline has been published successfully.
+            gh release view 'v1.0.0' --json tagName *> $null
+            $resetPublished = $LASTEXITCODE -eq 0
+            $previousTag = if ($resetPublished) {
+              $releaseTags | Select-Object -First 1
+            } else {
+              $null
+            }
+            if ($previousTag) {
+              $version = python tools/stamp_build_version.py --previous-version "$previousTag"
+            }
+            else {
+              $version = python tools/stamp_build_version.py
+            }
+          }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $version = $version.Trim()
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
