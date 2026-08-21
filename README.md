@@ -8,7 +8,7 @@ SteamyLAN enables you to play LAN games with your friends! Create game servers w
 [Download SteamyLAN (Windows 64bit)](https://github.com/noitavoo/SteamyLAN/releases/latest)
 
 ### Screenshots
-<img width="1370" height="862" alt="image" src="https://github.com/user-attachments/assets/2a0ddbe2-a972-42d9-a8a3-94f52535cca2" />
+<img width="1370" height="862" alt="screenshot" src="https://github.com/user-attachments/assets/913d0e26-6af8-4a30-8a80-80a93dbd3da3" />
 
 ## Basic Use
 
