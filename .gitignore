@@ -4,5 +4,4 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 *.log
-steam_api64.dll
 steam_appid.txt
