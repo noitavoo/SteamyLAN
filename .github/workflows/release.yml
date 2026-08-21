@@ -1,0 +1,172 @@
+name: Build and release SteamyLAN
+
+on:
+  push: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: steamylan-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # A normal push only publishes from the repository's default branch.
+    # workflow_dispatch is kept as a manual recovery/rebuild option.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out commit
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.14.7
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.14.7'
+          architecture: x64
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      - name: Resolve official Steamworks DLL
+        shell: pwsh
+        env:
+          STEAM_API64_DLL_B64: ${{ secrets.STEAM_API64_DLL_B64 }}
+        run: |
+          if (Test-Path "steam_api64.dll") {
+            Write-Host "Using steam_api64.dll checked into the repository."
+            exit 0
+          }
+
+          if (-not [string]::IsNullOrWhiteSpace($env:STEAM_API64_DLL_B64)) {
+            $bytes = [Convert]::FromBase64String($env:STEAM_API64_DLL_B64)
+            [IO.File]::WriteAllBytes((Join-Path $PWD "steam_api64.dll"), $bytes)
+            Write-Host "Restored steam_api64.dll from STEAM_API64_DLL_B64."
+            exit 0
+          }
+
+          throw @"
+          steam_api64.dll is required to build SteamyLAN.
+
+          Either:
+          1. Track the official 64-bit Steamworks steam_api64.dll in this repository, or
+          2. Add repository secret STEAM_API64_DLL_B64 containing the base64-encoded DLL.
+          "@
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+
+      - name: Run regression tests
+        shell: pwsh
+        run: python -m unittest discover -s tests -v
+
+      - name: Stamp commit build version
+        id: version
+        shell: pwsh
+        run: |
+          $version = python tools/stamp_build_version.py --build-number "$env:GITHUB_RUN_NUMBER"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = $version.Trim()
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "tag=v$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Building SteamyLAN $version"
+
+      - name: Build Windows application
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force build, dist, release -ErrorAction SilentlyContinue
+
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --windowed `
+            --onedir `
+            --name SteamyLAN `
+            --icon "SteamyLan\steamylan.ico" `
+            --add-data "SteamyLan\steamylan.ico:SteamyLan" `
+            --add-data "SteamyLan\steamylan.png:SteamyLan" `
+            --add-binary "steam_api64.dll:." `
+            run.py
+
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path "dist\SteamyLAN\SteamyLAN.exe")) {
+            throw "PyInstaller completed without creating dist\SteamyLAN\SteamyLAN.exe"
+          }
+
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --windowed `
+            --name SteamyLANUpdate `
+            tools\update_helper.py
+
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path "dist\SteamyLANUpdate.exe")) {
+            throw "PyInstaller did not create SteamyLANUpdate.exe"
+          }
+          Copy-Item "dist\SteamyLANUpdate.exe" "dist\SteamyLAN\SteamyLANUpdate.exe" -Force
+
+          # Keep the official Steam DLL directly beside the EXE. SteamyLAN's
+          # runtime loader intentionally checks this location first.
+          Copy-Item "steam_api64.dll" "dist\SteamyLAN\steam_api64.dll" -Force
+
+      - name: Trim runtime and create versioned ZIP
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $asset = "release\SteamyLAN_v$version.zip"
+
+          python tools/package_release.py --build "dist/SteamyLAN" --output-root "release" --version "$version"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          if (-not (Test-Path "release\SteamyLAN\SteamyLAN.exe")) {
+            throw "Release folder is missing SteamyLAN.exe"
+          }
+          if (-not (Test-Path "release\SteamyLAN\steam_api64.dll")) {
+            throw "Release folder is missing steam_api64.dll"
+          }
+          if (-not (Test-Path "release\SteamyLAN\SteamyLANUpdate.exe")) {
+            throw "Release folder is missing SteamyLANUpdate.exe"
+          }
+          if (-not (Test-Path $asset)) {
+            throw "Release ZIP was not created: $asset"
+          }
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $title = "SteamyLAN $env:RELEASE_VERSION"
+          $asset = "release\SteamyLAN_v$env:RELEASE_VERSION.zip"
+          $checksum = "$asset.sha256"
+          (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower() + "  " + (Split-Path $asset -Leaf) | Set-Content $checksum -NoNewline
+
+          # Re-running the same Actions run keeps the same run number/tag.
+          # Replace the asset instead of creating a duplicate release.
+          gh release view "$env:RELEASE_TAG" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $env:RELEASE_TAG already exists; replacing SteamyLAN_v$env:RELEASE_VERSION.zip."
+            gh release upload "$env:RELEASE_TAG" "$asset" "$checksum" --clobber
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          else {
+            gh release create "$env:RELEASE_TAG" "$asset" "$checksum" `
+              --target "$env:GITHUB_SHA" `
+              --title "$title" `
+              --generate-notes `
+              --latest
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

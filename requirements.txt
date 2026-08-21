@@ -1,0 +1,7 @@
+PySide6==6.11.1
+psutil>=7.0,<8
+platformdirs>=4.3,<5
+vdf>=3.4,<4
+pywin32>=310; platform_system == "Windows"
+
+cryptography>=46,<47

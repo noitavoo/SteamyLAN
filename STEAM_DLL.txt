@@ -1,0 +1,16 @@
+SteamyLAN does not redistribute steam_api64.dll.
+
+Put your official 64-bit Steamworks steam_api64.dll in either place:
+- beside run.py when running from source; or
+- beside SteamyLAN.exe after building with build_windows.bat.
+
+SteamyLAN writes steam_appid.txt at runtime in its per-user runtime directory.
+The default development AppID is 480. You can change the AppID from Settings >
+Advanced settings; Porthole compatibility uses AppID 4963920. AppID changes take
+effect after SteamyLAN is restarted.
+
+Use a current official Steamworks redistributable. This version binds the current
+ISteamUser v023, ISteamFriends v018, ISteamUtils v011, ISteamMatchmaking v009,
+ISteamNetworkingMessages v002, and ISteamNetworkingUtils v004 flat interfaces.
+Legacy DLLs that expose only the deprecated ISteamNetworking P2P packet API are
+not supported.
