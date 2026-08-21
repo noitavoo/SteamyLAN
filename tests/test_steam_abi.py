@@ -4,6 +4,8 @@ import ctypes
 import unittest
 
 from SteamyLan.steam_api import (
+    P2PSessionConnectFail,
+    P2PSessionRequest,
     SteamNetConnectionInfoPrefix,
     SteamNetworkingIdentity,
     SteamNetworkingIPAddr,
@@ -16,6 +18,11 @@ from SteamyLan.steam_api import (
 
 
 class SteamNetworkingAbiTests(unittest.TestCase):
+    def test_legacy_p2p_callbacks_match_steamworks_layout(self):
+        self.assertEqual(ctypes.sizeof(P2PSessionRequest), 8)
+        self.assertEqual(ctypes.sizeof(P2PSessionConnectFail), 16)
+        self.assertEqual(P2PSessionConnectFail.m_eP2PSessionError.offset, 8)
+
     def test_networking_identity_layout_matches_steamworks(self):
         self.assertEqual(ctypes.sizeof(SteamNetworkingIdentity), 136)
         self.assertEqual(SteamNetworkingIdentity.m_eType.offset, 0)

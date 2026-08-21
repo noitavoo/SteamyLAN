@@ -44,6 +44,8 @@ class FakeSteam:
         self.hub = hub
 
     def send_packet(self, peer_id: int, raw: bytes, channel: int, reliable: bool = True):
+        if not reliable and len(raw) > 1200:
+            raise AssertionError("legacy unreliable P2P packet exceeded 1200 bytes")
         self.hub.send(self.id, int(peer_id), int(channel), bytes(raw))
         return True
 
@@ -263,9 +265,10 @@ class TunnelForwardingTests(unittest.TestCase):
         try:
             host.start()
             client.start()
-            local.sendto(b"udp-first-packet", ("127.0.0.1", local_port))
-            data, _ = local.recvfrom(4096)
-            self.assertEqual(data, b"udp-first-packet")
+            payload = bytes(range(256)) * 20
+            local.sendto(payload, ("127.0.0.1", local_port))
+            data, _ = local.recvfrom(65535)
+            self.assertEqual(data, payload)
         finally:
             local.close()
             client.stop()

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""The local socket <-> Steam Networking Messages transport.
+"""The local socket <-> deprecated Steam P2P packet transport.
 
 Lobby and authorization policy deliberately live outside this module.  Each
 engine owns one authenticated peer and one derived Steam channel, so no tunnel
@@ -19,9 +19,9 @@ from .constants import (
     PROTO_NONE, PROTO_TCP, PROTO_UDP, PT_ACCESS_REVOKED, PT_AUTH_DENIED,
     PT_AUTH_GRANTED, PT_AUTH_REQUEST, PT_CLOSE, PT_DATA, PT_DISCONNECTED,
     PT_CONFIG_UPDATE, PT_DISCONNECT_ACK, PT_HEARTBEAT, PT_HEARTBEAT_ACK,
-    PT_HELLO, PT_OPEN_TCP, PT_UDP, TCP_CHUNK,
+    PT_HELLO, PT_OPEN_TCP, PT_UDP, PT_UDP_FRAGMENT, TCP_CHUNK,
 )
-from .protocol import pack_packet, unpack_packet
+from .protocol import HEADER, pack_packet, unpack_packet
 
 
 class TunnelError(RuntimeError):
@@ -291,6 +291,7 @@ class TunnelEngine:
         self._threads: list[threading.Thread] = []
         self._listener: socket.socket | None = None
         self._next_stream = 1
+        self._next_datagram = 1
         self._tcp: dict[int, socket.socket] = {}
         self._writes: dict[int, queue.Queue] = {}
         self._connecting: set[int] = set()
@@ -299,6 +300,7 @@ class TunnelEngine:
         self._clients: dict[int, tuple] = {}
         self._by_address: dict[tuple, int] = {}
         self._seen: dict[int, float] = {}
+        self._udp_reassembly: dict[tuple[int, int], tuple[float, int, dict[int, bytes]]] = {}
 
     def start(self) -> None:
         if self._threads:
@@ -321,6 +323,7 @@ class TunnelEngine:
             threads, self._threads = self._threads, []
             self._tcp.clear(); self._writes.clear(); self._connecting.clear(); self._cancelled.clear()
             self._udp.clear(); self._clients.clear(); self._by_address.clear(); self._seen.clear()
+            self._udp_reassembly.clear()
         for item in queues: self._offer(item, None)
         for item in sockets: self._close(item)
         current = threading.current_thread()
@@ -359,7 +362,10 @@ class TunnelEngine:
     def _send(self, kind: int, proto: int, stream_id: int, payload: bytes = b"", *, reliable: bool = True) -> bool:
         if self._stop.is_set(): return False
         try:
-            return bool(self.steam.send_packet(self.peer_id, pack_packet(kind, proto, stream_id, payload), self.channel, reliable=reliable))
+            wire = pack_packet(kind, proto, stream_id, payload)
+            if not reliable and len(wire) > 1200:
+                raise ValueError("Unreliable Steam P2P packet exceeds the legacy 1200-byte limit.")
+            return bool(self.steam.send_packet(self.peer_id, wire, self.channel, reliable=reliable))
         except Exception:
             if not self._stop.is_set(): self.log.debug("SteamyLAN tunnel send failed", exc_info=True)
             return False
@@ -392,9 +398,15 @@ class TunnelEngine:
             elif kind == PT_DATA and proto == PROTO_TCP: self._queue_tcp(stream_id, payload)
             elif kind == PT_CLOSE and proto == PROTO_TCP: self._remote_close_tcp(stream_id)
             elif kind == PT_UDP and proto == PROTO_UDP: self._target_udp(stream_id, payload)
+            elif kind == PT_UDP_FRAGMENT and proto == PROTO_UDP:
+                datagram = self._udp_fragment(stream_id, payload)
+                if datagram is not None: self._target_udp(stream_id, datagram)
         elif kind == PT_DATA and proto == PROTO_TCP: self._queue_tcp(stream_id, payload)
         elif kind == PT_CLOSE and proto == PROTO_TCP: self._remote_close_tcp(stream_id)
         elif kind == PT_UDP and proto == PROTO_UDP: self._reply_udp(stream_id, payload)
+        elif kind == PT_UDP_FRAGMENT and proto == PROTO_UDP:
+            datagram = self._udp_fragment(stream_id, payload)
+            if datagram is not None: self._reply_udp(stream_id, datagram)
 
     def _client_tcp(self) -> None:
         listener = self._listener
@@ -506,7 +518,7 @@ class TunnelEngine:
                     stream_id = self._new_stream()
                     self._by_address[address], self._clients[stream_id] = stream_id, address
                 self._seen[stream_id] = now
-            self._send(PT_UDP, PROTO_UDP, stream_id, payload, reliable=False)
+            self._send_udp_datagram(stream_id, payload)
 
     def _target_udp(self, stream_id: int, payload: bytes) -> None:
         with self._lock: sock = self._udp.get(stream_id)
@@ -539,7 +551,7 @@ class TunnelEngine:
                     continue
                 except OSError: return
                 with self._lock: self._seen[stream_id] = time.monotonic()
-                self._send(PT_UDP, PROTO_UDP, stream_id, payload, reliable=False)
+                self._send_udp_datagram(stream_id, payload)
         finally:
             with self._lock:
                 if self._udp.get(stream_id) is sock: self._udp.pop(stream_id, None)
@@ -551,6 +563,54 @@ class TunnelEngine:
         if address is None or listener is None: return
         try: listener.sendto(payload, address)
         except OSError: pass
+
+    _UDP_FRAG = struct.Struct("!IHH")
+    _UDP_FRAGMENT_BYTES = 1000
+
+    def _send_udp_datagram(self, stream_id: int, payload: bytes) -> None:
+        data = bytes(payload)
+        if len(data) > 65507:
+            return
+        if len(data) <= 1200 - HEADER.size:
+            self._send(PT_UDP, PROTO_UDP, stream_id, data, reliable=False)
+            return
+        with self._lock:
+            datagram_id = self._next_datagram
+            self._next_datagram = 1 if datagram_id >= 0xFFFFFFFF else datagram_id + 1
+        total = (len(data) + self._UDP_FRAGMENT_BYTES - 1) // self._UDP_FRAGMENT_BYTES
+        if total > 0xFFFF:
+            return
+        for index in range(total):
+            chunk = data[index * self._UDP_FRAGMENT_BYTES:(index + 1) * self._UDP_FRAGMENT_BYTES]
+            fragment = self._UDP_FRAG.pack(datagram_id, index, total) + chunk
+            self._send(PT_UDP_FRAGMENT, PROTO_UDP, stream_id, fragment, reliable=False)
+
+    def _udp_fragment(self, stream_id: int, payload: bytes) -> bytes | None:
+        if len(payload) < self._UDP_FRAG.size:
+            return None
+        datagram_id, index, total = self._UDP_FRAG.unpack_from(payload)
+        if total < 1 or total > 128 or index >= total:
+            return None
+        now = time.monotonic()
+        key = (int(stream_id), int(datagram_id))
+        with self._lock:
+            for old_key, value in tuple(self._udp_reassembly.items()):
+                if now - value[0] > 3.0:
+                    self._udp_reassembly.pop(old_key, None)
+            if key not in self._udp_reassembly and len(self._udp_reassembly) >= 256:
+                oldest = min(self._udp_reassembly, key=lambda item: self._udp_reassembly[item][0])
+                self._udp_reassembly.pop(oldest, None)
+            created, expected, parts = self._udp_reassembly.get(key, (now, int(total), {}))
+            if expected != int(total):
+                self._udp_reassembly.pop(key, None)
+                return None
+            parts.setdefault(int(index), payload[self._UDP_FRAG.size:])
+            self._udp_reassembly[key] = (created, expected, parts)
+            if len(parts) != expected:
+                return None
+            data = b"".join(parts[part] for part in range(expected))
+            self._udp_reassembly.pop(key, None)
+        return data if len(data) <= 65507 else None
 
     def _expire_udp(self, now: float | None = None) -> None:
         now = time.monotonic() if now is None else now

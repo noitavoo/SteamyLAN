@@ -18,8 +18,8 @@ from .constants import (
     CALLBACK_LOBBY_ENTER,
     CALLBACK_LOBBY_INVITE,
     CALLBACK_LOBBY_MATCH_LIST,
-    CALLBACK_NETWORKING_MESSAGES_SESSION_FAILED,
-    CALLBACK_NETWORKING_MESSAGES_SESSION_REQUEST,
+    CALLBACK_P2P_SESSION_CONNECT_FAIL,
+    CALLBACK_P2P_SESSION_REQUEST,
     CALLBACK_PERSONA_STATE_CHANGE,
     CALLBACK_STEAM_API_CALL_COMPLETED,
     DEFAULT_APP_ID,
@@ -27,9 +27,8 @@ from .constants import (
     LOBBY_FRIENDS_ONLY,
     LOBBY_PUBLIC,
     MAX_STEAM_PACKET,
-    STEAM_SEND_AUTO_RESTART_BROKEN_SESSION,
-    STEAM_SEND_RELIABLE_NO_NAGLE,
-    STEAM_SEND_UNRELIABLE_NO_NAGLE,
+    P2P_RELIABLE,
+    P2P_UNRELIABLE,
 )
 from .models import FriendInfo
 
@@ -347,6 +346,18 @@ class SteamFriendGameInfo(ctypes.Structure):
     ]
 
 
+class P2PSessionRequest(ctypes.Structure):
+    _fields_ = [("m_steamIDRemote", ctypes.c_uint64)]
+
+
+class P2PSessionConnectFail(ctypes.Structure):
+    _fields_ = [
+        ("m_steamIDRemote", ctypes.c_uint64),
+        ("m_eP2PSessionError", ctypes.c_uint8),
+        ("_pad", ctypes.c_uint8 * 7),
+    ]
+
+
 class SteamNetworkingIdentityData(ctypes.Union):
     _fields_ = [
         ("m_steamID64", ctypes.c_uint64),
@@ -482,7 +493,7 @@ class SteamClient:
         self.friends = None
         self.utils = None
         self.matchmaking = None
-        self.networking_messages = None
+        self.networking = None
         self.networking_utils = None
         self.pipe = 0
         self.initialized = False
@@ -508,6 +519,7 @@ class SteamClient:
         self._completed_unclaimed: dict[int, SteamAPICallCompleted] = {}
         self._pending_lock = threading.RLock()
         self._networking_lock = threading.RLock()
+        self._peer_traffic: dict[int, dict[str, float]] = {}
         self._dll_directory_handles: list[object] = []
         self.configure_network(
             relay_mode=relay_mode,
@@ -704,7 +716,7 @@ class SteamClient:
                 except Exception:
                     pass
             self._api_started = False
-            self.user = self.friends = self.utils = self.matchmaking = self.networking_messages = self.networking_utils = None
+            self.user = self.friends = self.utils = self.matchmaking = self.networking = self.networking_utils = None
             self.pipe = 0
             raise
 
@@ -769,9 +781,7 @@ class SteamClient:
         )
         utils_fn, _ = self._find_export(d, ["SteamAPI_SteamUtils_v011"])
         matchmaking_fn, _ = self._find_export(d, ["SteamAPI_SteamMatchmaking_v009"])
-        networking_messages_fn, _ = self._find_export(
-            d, ["SteamAPI_SteamNetworkingMessages_SteamAPI_v002"]
-        )
+        networking_fn, _ = self._find_export(d, ["SteamAPI_SteamNetworking_v006"])
         networking_utils_fn, _ = self._find_export(
             d, ["SteamAPI_SteamNetworkingUtils_SteamAPI_v004"]
         )
@@ -780,7 +790,7 @@ class SteamClient:
             friends_fn,
             utils_fn,
             matchmaking_fn,
-            networking_messages_fn,
+            networking_fn,
             networking_utils_fn,
         ):
             fn.argtypes = []
@@ -790,14 +800,14 @@ class SteamClient:
         self.friends = friends_fn()
         self.utils = utils_fn()
         self.matchmaking = matchmaking_fn()
-        self.networking_messages = networking_messages_fn()
+        self.networking = networking_fn()
         self.networking_utils = networking_utils_fn()
         if not all((
             self.user,
             self.friends,
             self.utils,
             self.matchmaking,
-            self.networking_messages,
+            self.networking,
             self.networking_utils,
         )):
             raise SteamError("One or more Steam interfaces returned NULL.")
@@ -888,39 +898,26 @@ class SteamClient:
         d.SteamAPI_ISteamMatchmaking_GetLobbyMemberByIndex.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_int]
         d.SteamAPI_ISteamMatchmaking_GetLobbyMemberByIndex.restype = ctypes.c_uint64
 
-        d.SteamAPI_ISteamNetworkingMessages_SendMessageToUser.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(SteamNetworkingIdentity),
-            ctypes.c_void_p,
-            ctypes.c_uint32,
-            ctypes.c_int,
-            ctypes.c_int,
+        d.SteamAPI_ISteamNetworking_SendP2PPacket.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint64, ctypes.c_void_p,
+            ctypes.c_uint32, ctypes.c_int, ctypes.c_int,
         ]
-        d.SteamAPI_ISteamNetworkingMessages_SendMessageToUser.restype = ctypes.c_int
-        d.SteamAPI_ISteamNetworkingMessages_ReceiveMessagesOnChannel.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_int,
-            ctypes.POINTER(ctypes.POINTER(SteamNetworkingMessage)),
-            ctypes.c_int,
+        d.SteamAPI_ISteamNetworking_SendP2PPacket.restype = ctypes.c_bool
+        d.SteamAPI_ISteamNetworking_IsP2PPacketAvailable.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_int,
         ]
-        d.SteamAPI_ISteamNetworkingMessages_ReceiveMessagesOnChannel.restype = ctypes.c_int
-        d.SteamAPI_ISteamNetworkingMessages_AcceptSessionWithUser.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(SteamNetworkingIdentity),
+        d.SteamAPI_ISteamNetworking_IsP2PPacketAvailable.restype = ctypes.c_bool
+        d.SteamAPI_ISteamNetworking_ReadP2PPacket.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint64), ctypes.c_int,
         ]
-        d.SteamAPI_ISteamNetworkingMessages_AcceptSessionWithUser.restype = ctypes.c_bool
-        d.SteamAPI_ISteamNetworkingMessages_CloseSessionWithUser.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(SteamNetworkingIdentity),
-        ]
-        d.SteamAPI_ISteamNetworkingMessages_CloseSessionWithUser.restype = ctypes.c_bool
-        d.SteamAPI_ISteamNetworkingMessages_GetSessionConnectionInfo.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(SteamNetworkingIdentity),
-            ctypes.c_void_p,
-            ctypes.POINTER(SteamNetConnectionRealTimeStatus),
-        ]
-        d.SteamAPI_ISteamNetworkingMessages_GetSessionConnectionInfo.restype = ctypes.c_int
+        d.SteamAPI_ISteamNetworking_ReadP2PPacket.restype = ctypes.c_bool
+        d.SteamAPI_ISteamNetworking_AcceptP2PSessionWithUser.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+        d.SteamAPI_ISteamNetworking_AcceptP2PSessionWithUser.restype = ctypes.c_bool
+        d.SteamAPI_ISteamNetworking_CloseP2PSessionWithUser.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+        d.SteamAPI_ISteamNetworking_CloseP2PSessionWithUser.restype = ctypes.c_bool
+        d.SteamAPI_ISteamNetworking_AllowP2PPacketRelay.argtypes = [ctypes.c_void_p, ctypes.c_bool]
+        d.SteamAPI_ISteamNetworking_AllowP2PPacketRelay.restype = ctypes.c_bool
         d.SteamAPI_ISteamNetworkingUtils_SetConfigValue.argtypes = [
             ctypes.c_void_p,
             ctypes.c_int,
@@ -941,23 +938,6 @@ class SteamClient:
         d.SteamAPI_ISteamNetworkingUtils_GetPOPList.restype = ctypes.c_int
         d.SteamAPI_ISteamNetworkingUtils_GetPingToDataCenter.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)]
         d.SteamAPI_ISteamNetworkingUtils_GetPingToDataCenter.restype = ctypes.c_int
-        d.SteamAPI_SteamNetworkingMessage_t_Release.argtypes = [
-            ctypes.POINTER(SteamNetworkingMessage)
-        ]
-        d.SteamAPI_SteamNetworkingMessage_t_Release.restype = None
-        try:
-            d.SteamAPI_SteamNetworkingIdentity_SetSteamID64.argtypes = [
-                ctypes.POINTER(SteamNetworkingIdentity), ctypes.c_uint64
-            ]
-            d.SteamAPI_SteamNetworkingIdentity_SetSteamID64.restype = None
-            d.SteamAPI_SteamNetworkingIdentity_GetSteamID64.argtypes = [
-                ctypes.POINTER(SteamNetworkingIdentity)
-            ]
-            d.SteamAPI_SteamNetworkingIdentity_GetSteamID64.restype = ctypes.c_uint64
-        except AttributeError:
-            # Older compatible redistributables can still use the verified ABI
-            # layout fallback in SteamNetworkingIdentity.for_steam_id().
-            pass
 
     @staticmethod
     def _kbps_to_bytes_per_second(value: int) -> int:
@@ -1111,9 +1091,16 @@ class SteamClient:
             self.log.exception("Could not clear Steam rich presence")
 
     def _apply_network_config(self) -> None:
-        if not self.networking_utils or not self.dll:
+        if not self.dll:
             return
         try:
+            if self.networking:
+                self.dll.SteamAPI_ISteamNetworking_AllowP2PPacketRelay(
+                    self.networking,
+                    self._relay_mode != "force_direct",
+                )
+            if not self.networking_utils:
+                return
             if self._relay_mode == "force_relay":
                 self._set_global_int32(_STEAM_NET_CONFIG_P2P_ICE_ENABLE, _STEAM_NET_ICE_DISABLE)
                 self._set_global_int32(_STEAM_NET_CONFIG_P2P_ICE_PENALTY, None)
@@ -1188,7 +1175,9 @@ class SteamClient:
         self.initialized = False
         self._rich_presence_value = None
         self.pipe = 0
-        self.user = self.friends = self.utils = self.matchmaking = self.networking_messages = self.networking_utils = None
+        self.user = self.friends = self.utils = self.matchmaking = self.networking = self.networking_utils = None
+        with self._networking_lock:
+            self._peer_traffic.clear()
         with self._pending_lock:
             self._pending_calls.clear()
             self._completed_unclaimed.clear()
@@ -1482,124 +1471,120 @@ class SteamClient:
 
 
 
-    def _make_network_identity(self, steam_id: int) -> SteamNetworkingIdentity:
-        identity = SteamNetworkingIdentity()
-        setter = getattr(self.dll, "SteamAPI_SteamNetworkingIdentity_SetSteamID64", None)
-        if setter is not None:
-            setter(ctypes.byref(identity), ctypes.c_uint64(int(steam_id)))
-            return identity
-        return SteamNetworkingIdentity.for_steam_id(steam_id)
-
-    def _network_identity_steam_id(self, identity: SteamNetworkingIdentity) -> int:
-        getter = getattr(self.dll, "SteamAPI_SteamNetworkingIdentity_GetSteamID64", None)
-        if getter is not None:
-            return int(getter(ctypes.byref(identity)))
-        return identity.steam_id()
+    def _record_peer_traffic(self, steam_id: int, *, sent: int = 0, received: int = 0) -> None:
+        sid = int(steam_id)
+        now = time.monotonic()
+        row = self._peer_traffic.setdefault(
+            sid,
+            {
+                "sample_time": now,
+                "sent": 0.0,
+                "received": 0.0,
+                "sample_sent": 0.0,
+                "sample_received": 0.0,
+                "upload_bps": 0.0,
+                "download_bps": 0.0,
+            },
+        )
+        row["sent"] += max(0, int(sent))
+        row["received"] += max(0, int(received))
 
     def peer_network_stats(self, steam_id: int) -> tuple[int, float, float]:
-        if not self.initialized or not self.networking_messages:
+        if not self.initialized or not self.networking:
             return -1, 0.0, 0.0
-        identity = self._make_network_identity(steam_id)
-        status = SteamNetConnectionRealTimeStatus()
         with self._networking_lock:
-            state = int(
-                self.dll.SteamAPI_ISteamNetworkingMessages_GetSessionConnectionInfo(
-                    self.networking_messages,
-                    ctypes.byref(identity),
-                    None,
-                    ctypes.byref(status),
-                )
-            )
-        if state <= 0:
-            return -1, 0.0, 0.0
-        return (
-            max(-1, int(status.m_nPing)),
-            max(0.0, float(status.m_flOutBytesPerSec)),
-            max(0.0, float(status.m_flInBytesPerSec)),
-        )
+            self._record_peer_traffic(steam_id)
+            row = self._peer_traffic[int(steam_id)]
+            now = time.monotonic()
+            elapsed = now - row["sample_time"]
+            if elapsed >= 0.25:
+                row["upload_bps"] = max(0.0, (row["sent"] - row["sample_sent"]) / elapsed)
+                row["download_bps"] = max(0.0, (row["received"] - row["sample_received"]) / elapsed)
+                row["sample_sent"] = row["sent"]
+                row["sample_received"] = row["received"]
+                row["sample_time"] = now
+            return -1, row["upload_bps"], row["download_bps"]
 
     def accept_peer(self, steam_id: int) -> bool:
-        identity = self._make_network_identity(steam_id)
         with self._networking_lock:
             return bool(
-                self.dll.SteamAPI_ISteamNetworkingMessages_AcceptSessionWithUser(
-                    self.networking_messages,
-                    ctypes.byref(identity),
+                self.dll.SteamAPI_ISteamNetworking_AcceptP2PSessionWithUser(
+                    self.networking,
+                    ctypes.c_uint64(int(steam_id)),
                 )
             )
 
     def close_peer(self, steam_id: int) -> None:
         try:
-            identity = self._make_network_identity(steam_id)
             with self._networking_lock:
-                self.dll.SteamAPI_ISteamNetworkingMessages_CloseSessionWithUser(
-                    self.networking_messages,
-                    ctypes.byref(identity),
+                self.dll.SteamAPI_ISteamNetworking_CloseP2PSessionWithUser(
+                    self.networking,
+                    ctypes.c_uint64(int(steam_id)),
                 )
+                self._peer_traffic.pop(int(steam_id), None)
         except Exception:
-            self.log.exception("Failed to close Steam networking session")
+            self.log.exception("Failed to close Steam P2P session")
 
     def send_packet(self, steam_id: int, packet: bytes, channel: int, reliable: bool = True) -> bool:
         if len(packet) > MAX_STEAM_PACKET:
-            raise ValueError(f"Steam networking message exceeds SteamyLAN's {MAX_STEAM_PACKET}-byte limit.")
+            raise ValueError(f"Steam P2P packet exceeds SteamyLAN's {MAX_STEAM_PACKET}-byte limit.")
+        if not reliable and len(packet) > 1200:
+            raise ValueError("Unreliable Steam P2P packets are limited to 1200 bytes.")
         self._upload_limiter.wait(len(packet))
-        identity = self._make_network_identity(steam_id)
         buf = ctypes.create_string_buffer(packet)
-
-
-
-
-        flags = (
-            STEAM_SEND_RELIABLE_NO_NAGLE
-            if reliable
-            else STEAM_SEND_UNRELIABLE_NO_NAGLE
-        ) | STEAM_SEND_AUTO_RESTART_BROKEN_SESSION
+        mode = P2P_RELIABLE if reliable else P2P_UNRELIABLE
         with self._networking_lock:
-            result = int(
-                self.dll.SteamAPI_ISteamNetworkingMessages_SendMessageToUser(
-                    self.networking_messages,
-                    ctypes.byref(identity),
+            accepted = bool(
+                self.dll.SteamAPI_ISteamNetworking_SendP2PPacket(
+                    self.networking,
+                    ctypes.c_uint64(int(steam_id)),
                     ctypes.cast(buf, ctypes.c_void_p),
                     len(packet),
-                    flags,
+                    mode,
                     int(channel),
                 )
             )
-        return result == 1
+            if accepted:
+                self._record_peer_traffic(steam_id, sent=len(packet))
+            return accepted
 
     def recv_packets(self, channel: int, max_messages: int = 32) -> list[tuple[int, bytes]]:
         limit = max(1, min(64, int(max_messages)))
-        message_ptrs = (ctypes.POINTER(SteamNetworkingMessage) * limit)()
         results: list[tuple[int, bytes]] = []
         total_bytes = 0
-        with self._networking_lock:
-            count = int(
-                self.dll.SteamAPI_ISteamNetworkingMessages_ReceiveMessagesOnChannel(
-                    self.networking_messages,
-                    int(channel),
-                    ctypes.cast(
-                        message_ptrs,
-                        ctypes.POINTER(ctypes.POINTER(SteamNetworkingMessage)),
-                    ),
-                    limit,
-                )
-            )
-            if count <= 0:
-                return results
-            for index in range(min(count, limit)):
-                message_ptr = message_ptrs[index]
-                if not message_ptr:
+        for _ in range(limit):
+            with self._networking_lock:
+                size = ctypes.c_uint32(0)
+                if not self.dll.SteamAPI_ISteamNetworking_IsP2PPacketAvailable(
+                    self.networking, ctypes.byref(size), int(channel)
+                ):
+                    break
+                capacity = int(size.value)
+                if not (0 < capacity <= MAX_STEAM_PACKET):
+                    discard = ctypes.create_string_buffer(1)
+                    read = ctypes.c_uint32(0)
+                    sender = ctypes.c_uint64(0)
+                    self.dll.SteamAPI_ISteamNetworking_ReadP2PPacket(
+                        self.networking, ctypes.cast(discard, ctypes.c_void_p), 1,
+                        ctypes.byref(read), ctypes.byref(sender), int(channel),
+                    )
                     continue
-                try:
-                    message = message_ptr.contents
-                    size = int(message.m_cbSize)
-                    sender = self._network_identity_steam_id(message.m_identityPeer)
-                    if sender and 0 < size <= MAX_STEAM_PACKET and message.m_pData:
-                        payload = ctypes.string_at(message.m_pData, size)
-                        results.append((sender, payload))
-                        total_bytes += len(payload)
-                finally:
-                    self.dll.SteamAPI_SteamNetworkingMessage_t_Release(message_ptr)
+                buf = ctypes.create_string_buffer(capacity)
+                read = ctypes.c_uint32(0)
+                sender = ctypes.c_uint64(0)
+                ok = bool(self.dll.SteamAPI_ISteamNetworking_ReadP2PPacket(
+                    self.networking, ctypes.cast(buf, ctypes.c_void_p), capacity,
+                    ctypes.byref(read), ctypes.byref(sender), int(channel),
+                ))
+                if not ok:
+                    continue
+                payload = bytes(buf.raw[: int(read.value)])
+                sid = int(sender.value)
+                if not sid or not payload:
+                    continue
+                results.append((sid, payload))
+                total_bytes += len(payload)
+                self._record_peer_traffic(sid, received=len(payload))
         if total_bytes:
             self._download_limiter.wait(total_bytes)
         return results
@@ -1687,26 +1672,21 @@ class SteamClient:
                     response=int(data.m_EChatRoomEnterResponse),
                 )
             return
-        if cid == CALLBACK_NETWORKING_MESSAGES_SESSION_REQUEST:
-            data = self._copy_callback(msg, SteamNetworkingMessagesSessionRequest)
+        if cid == CALLBACK_P2P_SESSION_REQUEST:
+            data = self._copy_callback(msg, P2PSessionRequest)
             if data:
-                steam_id = self._network_identity_steam_id(data.m_identityRemote)
+                steam_id = int(data.m_steamIDRemote)
                 if steam_id:
                     self._emit("networking_session_request", steam_id=steam_id)
             return
-        if cid == CALLBACK_NETWORKING_MESSAGES_SESSION_FAILED:
-            data = self._copy_callback(msg, SteamNetworkingMessagesSessionFailedPrefix)
+        if cid == CALLBACK_P2P_SESSION_CONNECT_FAIL:
+            data = self._copy_callback(msg, P2PSessionConnectFail)
             if data:
-                steam_id = self._network_identity_steam_id(data.m_info.m_identityRemote)
-                reason = int(data.m_info.m_eEndReason)
-                debug = bytes(data.m_info.m_szEndDebug).split(b"\x00", 1)[0].decode("utf-8", "replace")
+                steam_id = int(data.m_steamIDRemote)
+                reason = int(data.m_eP2PSessionError)
                 if steam_id:
-                    self.log.warning(
-                        "Steam P2P session with %s failed (reason %s): %s",
-                        steam_id,
-                        reason,
-                        debug or "no diagnostic text",
-                    )
+                    debug = f"Legacy Steam P2P error {reason}"
+                    self.log.warning("Steam P2P session with %s failed (reason %s)", steam_id, reason)
                     self._emit(
                         "networking_session_failed",
                         steam_id=steam_id,
