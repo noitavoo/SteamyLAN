@@ -709,46 +709,11 @@ QFrame#ChatBubbleOwn {
     background-color: #142445;
     border-color: #345386;
 }
-QPushButton#Small,
-QPushButton#SmallPrimary,
-QPushButton#PortAction {
+QPushButton#Small {
     min-height: 30px;
     padding: 0 11px;
     border-radius: 8px;
     font-size: 12px;
-}
-QPushButton#PortAction {
-    color: #cbd7e8;
-    background-color: #111d2e;
-    border: 1px solid #344968;
-}
-QPushButton#PortAction:hover {
-    color: #f3f7fd;
-    background-color: #182840;
-    border-color: #5574a1;
-}
-QPushButton#PortAction:pressed {
-    background-color: #0d1727;
-    border-color: #6f89b5;
-}
-QPushButton#PortAction[applied="true"] {
-    color: #dff9ec;
-    background-color: #15372f;
-    border-color: #3f967b;
-}
-QPushButton#PortAction:disabled {
-    color: #66758b;
-    background-color: #0d1624;
-    border-color: #26354b;
-}
-QPushButton#SmallPrimary {
-    color: #ffffff;
-    background-color: #6079f6;
-    border-color: #7289fa;
-}
-QPushButton#SmallPrimary:hover {
-    background-color: #6d85ff;
-    border-color: #8296ff;
 }
 """
 

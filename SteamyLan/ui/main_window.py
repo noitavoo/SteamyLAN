@@ -58,6 +58,7 @@ from ..updater import (
     check_for_update,
     download_update,
     launch_update_helper,
+    update_version_is_blocked,
     update_cache_directory,
 )
 from ..workers import FunctionWorker
@@ -248,7 +249,10 @@ class SettingsDialog(QDialog):
         self._update_check_callback = update_check_callback
         self._steam_client = steam_client
         self.setWindowTitle("SteamyLAN - Settings")
-        self.setMinimumSize(560, 620)
+        self.setMinimumSize(540, 460)
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            self.setMaximumHeight(max(460, screen.availableGeometry().height() - 64))
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 18, 20, 16)
         root.setSpacing(8)
@@ -332,8 +336,8 @@ class SettingsDialog(QDialog):
         update_mode_label.setObjectName("Section")
         updates_lay.addWidget(update_mode_label)
         self.update_mode = QComboBox()
-        self.update_mode.addItem("Download and install automatically", "automatic")
         self.update_mode.addItem("Notify me, but do not install", "notify")
+        self.update_mode.addItem("Download and install automatically", "automatic")
         self.update_mode.addItem("Do not check automatically", "disabled")
         self.update_mode.setCurrentIndex(max(0, self.update_mode.findData(prefs.prefs.update_mode)))
         updates_lay.addWidget(self.update_mode)
@@ -495,7 +499,7 @@ class SettingsDialog(QDialog):
         self.prefs.prefs.notifications = self.notifications.isChecked()
         self.prefs.prefs.show_steam_status = self.steam_status.isChecked()
         self.prefs.prefs.check_updates_on_start = self.update_start.isChecked()
-        self.prefs.prefs.update_mode = str(self.update_mode.currentData() or "automatic")
+        self.prefs.prefs.update_mode = str(self.update_mode.currentData() or "notify")
         self.prefs.prefs.custom_app_id = "" if parsed_app_id is None else str(parsed_app_id)
         self.prefs.prefs.bind_address = bind_address
         try:
@@ -647,8 +651,13 @@ class ServerSettingsDialog(QDialog):
             for endpoint in self.current_service.endpoints
         }
         self.setWindowTitle("Edit Live Server")
-        self.setMinimumSize(680, 620)
-        self.resize(720, 760)
+        self.setMinimumSize(560, 460)
+        screen = self.screen() or QApplication.primaryScreen()
+        max_height = 700
+        if screen is not None:
+            max_height = max(460, screen.availableGeometry().height() - 64)
+        self.setMaximumHeight(max_height)
+        self.resize(720, max_height)
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 18, 20, 16)
         root.setSpacing(12)
@@ -773,17 +782,19 @@ class ServerSettingsDialog(QDialog):
         self.program_summary.setWordWrap(True)
         ports_card_layout.addWidget(self.program_summary)
 
-        program_actions = QHBoxLayout()
+        # Keep these commands vertically stacked so their labels never force
+        # the live-server dialog wider than a smaller display.
+        program_actions = QVBoxLayout()
         self.add_program_ports = QPushButton("Add to current port list")
-        self.add_program_ports.setObjectName("PortAction")
+        self.add_program_ports.setObjectName("Small")
         self.add_program_ports.setToolTip("Keep the current TCP/UDP entries and add any new ports detected for this program.")
         self.add_program_ports.clicked.connect(self._append_program)
-        program_actions.addWidget(self.add_program_ports, 1)
+        program_actions.addWidget(self.add_program_ports)
         self.use_program_ports = QPushButton("Replace list with detected ports")
-        self.use_program_ports.setObjectName("PortAction")
+        self.use_program_ports.setObjectName("Small")
         self.use_program_ports.setToolTip("Clear the current TCP/UDP entries and use only ports detected for this program.")
         self.use_program_ports.clicked.connect(self._replace_program)
-        program_actions.addWidget(self.use_program_ports, 1)
+        program_actions.addWidget(self.use_program_ports)
         ports_card_layout.addLayout(program_actions)
 
         # These are commands, not a persistent two-option selection.  Keep
@@ -1197,6 +1208,7 @@ class MainWindow(QMainWindow):
         self._update_download_notice = None
         self._update_download_worker = None
         self._downloading_update_info = None
+        self._update_target_version = ""
         self._pending_update_archive = None
         self._pending_update_info = None
         self._runtime_labels: list[tuple[QLabel, DetectedService]] = []
@@ -3023,7 +3035,7 @@ class MainWindow(QMainWindow):
                 names.addWidget(steam_status)
                 rl.addLayout(names, 1)
                 invite = QPushButton("Invite")
-                invite.setObjectName("SmallPrimary")
+                invite.setObjectName("Small")
                 invite.setEnabled(selectable)
                 invite.setToolTip(
                     "Send a Steam lobby invite"
@@ -3282,6 +3294,7 @@ class MainWindow(QMainWindow):
             return
         self._update_install_running = True
         self._downloading_update_info = info
+        self._update_target_version = info.latest_version
         self._show_update_download_notice(info.latest_version)
         worker = FunctionWorker(download_update, info, update_cache_directory())
         worker.signals.result.connect(self._update_download_result)
@@ -3304,7 +3317,10 @@ class MainWindow(QMainWindow):
 
     def _launch_downloaded_update(self, archive: Path) -> None:
         try:
-            launch_update_helper(archive, os.getpid())
+            version = str(self._update_target_version or "")
+            if not version:
+                raise RuntimeError("The downloaded update has no version information.")
+            launch_update_helper(archive, os.getpid(), version)
         except Exception as exc:
             Path(str(archive)).unlink(missing_ok=True)
             self._update_install_running = False
@@ -3336,6 +3352,8 @@ class MainWindow(QMainWindow):
         self._pending_update_archive = None
         self._pending_update_info = None
         self._update_install_running = True
+        if not self._update_target_version:
+            self._update_target_version = str(getattr(self._downloading_update_info, "latest_version", "") or "")
         self._launch_downloaded_update(archive)
 
     @Slot(str)
@@ -3343,6 +3361,7 @@ class MainWindow(QMainWindow):
         self._close_update_download_notice()
         self._update_install_running = False
         self._downloading_update_info = None
+        self._update_target_version = ""
         self._update_error(text, automatic=False)
 
     @Slot()
@@ -3416,6 +3435,9 @@ class MainWindow(QMainWindow):
                     "SteamyLAN updates",
                     "GitHub returned an unexpected update response. No update was installed.",
                 )
+            return
+        if automatic and info.newer and update_version_is_blocked(info.latest_version):
+            self.log.warning("Skipping previously interrupted or failed automatic update %s", info.latest_version)
             return
 
         if info.newer:
@@ -3773,7 +3795,7 @@ class MainWindow(QMainWindow):
         ports_header.addStretch(1)
         if snap.mode == "connected":
             accept_all = QPushButton("Open every port locally")
-            accept_all.setObjectName("SmallPrimary")
+            accept_all.setObjectName("Small")
             accept_all.setToolTip("Start a local listener for every port shared by the host")
             accept_all.clicked.connect(self._accept_all_remote_services)
             ports_header.addWidget(accept_all)
@@ -3790,7 +3812,7 @@ class MainWindow(QMainWindow):
             )
             if compatible_discovery and not snap.discovery_requested:
                 enable_discovery = QPushButton("Enable LAN discovery")
-                enable_discovery.setObjectName("SmallPrimary")
+                enable_discovery.setObjectName("Small")
                 enable_discovery.setToolTip("Safely redirect this lobby's UDP discovery broadcasts to localhost")
                 enable_discovery.clicked.connect(self.session.enable_lan_discovery)
                 ports_header.addWidget(enable_discovery)
@@ -3833,7 +3855,7 @@ class MainWindow(QMainWindow):
                         discovery.setToolTip("Only broadcasts for this UDP port are redirected to localhost")
                         rl.addWidget(discovery)
                     copy_ip = QPushButton("Copy address")
-                    copy_ip.setObjectName("SmallPrimary")
+                    copy_ip.setObjectName("Small")
                     copy_ip.clicked.connect(
                         lambda _=False, value=mapping.address, button=copy_ip: self._copy(value, button)
                     )
@@ -3850,7 +3872,7 @@ class MainWindow(QMainWindow):
                     rl.addWidget(revoke)
                 else:
                     accept = QPushButton("Open locally")
-                    accept.setObjectName("SmallPrimary")
+                    accept.setObjectName("Small")
                     accept.clicked.connect(lambda _=False, sid=spec.service_id: self.session.accept_client_service(sid))
                     rl.addWidget(accept)
             pl.addWidget(row)
@@ -3957,7 +3979,7 @@ class MainWindow(QMainWindow):
             if snap.mode == "sharing" and member.steam_id != config.host_id:
                 if state.status in pending_statuses or member.steam_id in pending_ids:
                     allow = QPushButton("Allow")
-                    allow.setObjectName("SmallPrimary")
+                    allow.setObjectName("Small")
                     allow.clicked.connect(lambda _=False, sid=member.steam_id: self.session.allow_peer(sid, True))
                     deny = QPushButton("Deny")
                     deny.setObjectName("Small")
@@ -4002,7 +4024,7 @@ class MainWindow(QMainWindow):
             self._friend_total_count_label = friend_count
             friend_header.addWidget(friend_count)
             invite_selected = QPushButton()
-            invite_selected.setObjectName("SmallPrimary")
+            invite_selected.setObjectName("Small")
             invite_selected.clicked.connect(self._invite_selected_friends)
             self._friend_invite_button = invite_selected
             friend_header.addWidget(invite_selected)

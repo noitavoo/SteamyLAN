@@ -24,7 +24,7 @@ class Preferences:
     notifications: bool = True
     start_with_computer: bool = False
     check_updates_on_start: bool = True
-    update_mode: str = "automatic"
+    update_mode: str = "notify"
     custom_app_id: str = ""
     bind_address: str = "0.0.0.0"
     show_steam_status: bool = True
@@ -69,7 +69,7 @@ class PreferenceStore:
         if prefs.last_page not in {"join", "create", "server"}:
             prefs.last_page = "join"
         if prefs.update_mode not in {"automatic", "notify", "disabled"}:
-            prefs.update_mode = "automatic"
+            prefs.update_mode = "notify"
         prefs.bind_address = self.normalize_bind_address(prefs.bind_address) or "0.0.0.0"
         prefs.custom_app_id = self._normalize_app_id_text(prefs.custom_app_id)
         return prefs

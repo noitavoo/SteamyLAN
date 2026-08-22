@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+from ctypes import wintypes
+import json
 import os
 import shutil
 import subprocess
@@ -18,7 +20,109 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--install-dir", type=Path, required=True)
     parser.add_argument("--parent-pid", type=int, required=True)
     parser.add_argument("--exe", default="SteamyLAN.exe")
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--attempt-file", type=Path, required=True)
     return parser.parse_args()
+
+
+class _TrayProgress:
+    """Small native Windows tray indicator for the detached update process."""
+
+    _NIM_ADD = 0x00000000
+    _NIM_MODIFY = 0x00000001
+    _NIM_DELETE = 0x00000002
+    _NIF_ICON = 0x00000002
+    _NIF_TIP = 0x00000004
+    _IDI_INFORMATION = 32516
+
+    class _NotifyIconData(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD), ("hWnd", wintypes.HWND),
+            ("uID", wintypes.UINT), ("uFlags", wintypes.UINT),
+            ("uCallbackMessage", wintypes.UINT), ("hIcon", wintypes.HICON),
+            ("szTip", wintypes.WCHAR * 128), ("dwState", wintypes.DWORD),
+            ("dwStateMask", wintypes.DWORD), ("szInfo", wintypes.WCHAR * 256),
+            ("uVersion", wintypes.UINT), ("szInfoTitle", wintypes.WCHAR * 64),
+            ("dwInfoFlags", wintypes.DWORD), ("guidItem", ctypes.c_byte * 16),
+            ("hBalloonIcon", wintypes.HICON),
+        ]
+
+    def __init__(self):
+        self._data = None
+        self._active = False
+        if os.name != "nt":
+            return
+        try:
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+            user32.CreateWindowExW.argtypes = [
+                wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
+            ]
+            user32.CreateWindowExW.restype = wintypes.HWND
+            hwnd = user32.CreateWindowExW(0, "STATIC", "SteamyLAN Update", 0, 0, 0, 0, 0, None, None, None, None)
+            if not hwnd:
+                return
+            user32.LoadIconW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR]
+            user32.LoadIconW.restype = wintypes.HICON
+            shell32.Shell_NotifyIconW.argtypes = [wintypes.DWORD, ctypes.POINTER(self._NotifyIconData)]
+            shell32.Shell_NotifyIconW.restype = wintypes.BOOL
+            self._user32, self._shell32 = user32, shell32
+            self._data = self._NotifyIconData()
+            self._data.cbSize = ctypes.sizeof(self._NotifyIconData)
+            self._data.hWnd = hwnd
+            self._data.uID = 1
+            self._data.uFlags = self._NIF_ICON | self._NIF_TIP
+            resource_id = ctypes.cast(ctypes.c_void_p(self._IDI_INFORMATION), wintypes.LPCWSTR)
+            self._data.hIcon = user32.LoadIconW(None, resource_id)
+            self.update("Starting update…", add=True)
+        except Exception:
+            self.close()
+
+    def update(self, status: str, *, add: bool = False) -> None:
+        if self._data is None:
+            return
+        try:
+            self._data.szTip = f"SteamyLAN update — {status}"[:127]
+            operation = self._NIM_ADD if add and not self._active else self._NIM_MODIFY
+            self._active = bool(self._shell32.Shell_NotifyIconW(operation, ctypes.byref(self._data)))
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        if self._data is not None:
+            try:
+                self._shell32.Shell_NotifyIconW(self._NIM_DELETE, ctypes.byref(self._data))
+                self._user32.DestroyWindow(self._data.hWnd)
+            except Exception:
+                pass
+        self._data = None
+        self._active = False
+
+
+def _write_attempt(path: Path, version: str, phase: str) -> None:
+    try:
+        payload = {"version": str(version), "phase": str(phase), "updated_at": time.time()}
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        temporary.replace(path)
+    except OSError:
+        pass
+
+
+def _record_failure(install_dir: Path, version: str, error: Exception, attempt: Path) -> None:
+    try:
+        path = install_dir.parent / "SteamyLAN-update-failed.json"
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps({
+            "version": str(version), "reason": f"{type(error).__name__}: {error}"[:2000],
+            "failed_at": time.time(),
+        }, sort_keys=True), encoding="utf-8")
+        temporary.replace(path)
+    except OSError:
+        pass
+    attempt.unlink(missing_ok=True)
 
 
 def _wait_for_parent(pid: int) -> None:
@@ -81,7 +185,7 @@ def _replace_with_retry(source: Path, target: Path, timeout: float = 45.0) -> No
     raise RuntimeError(f"Could not replace {target}.")
 
 
-def _extract_archive(archive: Path, parent: Path) -> Path:
+def _extract_archive(archive: Path, parent: Path, progress: _TrayProgress | None = None) -> Path:
     stage = Path(tempfile.mkdtemp(prefix="SteamyLAN-stage-", dir=str(parent)))
     try:
         with zipfile.ZipFile(archive) as source:
@@ -90,7 +194,10 @@ def _extract_archive(archive: Path, parent: Path) -> Path:
                 raise RuntimeError("The update archive is missing SteamyLAN.exe.")
             if "SteamyLAN/SteamyLANUpdate.exe" not in names:
                 raise RuntimeError("The update archive is missing the updater helper.")
-            for name in names:
+            total = max(1, len(names))
+            for index, name in enumerate(names, start=1):
+                if progress and (index == 1 or index == total or index % 20 == 0):
+                    progress.update(f"Extracting files ({index}/{total})…")
                 relative = Path(name)
                 if relative.is_absolute() or ".." in relative.parts or not name.startswith("SteamyLAN/"):
                     raise RuntimeError("The update archive contains an unsafe path.")
@@ -107,16 +214,22 @@ def _extract_archive(archive: Path, parent: Path) -> Path:
         raise
 
 
-def _swap_and_launch(new_dir: Path, install_dir: Path, executable: str) -> bool:
+def _swap_and_launch(new_dir: Path, install_dir: Path, executable: str, progress: _TrayProgress | None = None) -> bool:
     backup = install_dir.with_name(f"{install_dir.name}.previous-{os.getpid()}")
     if backup.exists():
         shutil.rmtree(backup, ignore_errors=True)
+    if progress:
+        progress.update("Replacing the previous version…")
     _replace_with_retry(install_dir, backup)
     try:
+        if progress:
+            progress.update("Installing the new version…")
         _replace_with_retry(new_dir, install_dir)
         target = install_dir / executable
         if not target.is_file():
             raise RuntimeError("The staged update did not contain the application executable.")
+        if progress:
+            progress.update("Starting the updated app…")
         process = subprocess.Popen([str(target)], cwd=str(install_dir), close_fds=True)
         time.sleep(8)
         if process.poll() is not None:
@@ -156,12 +269,20 @@ def main() -> int:
     stage_root = None
     succeeded = False
     parent_stopped = False
+    tray = _TrayProgress()
     try:
+        _write_attempt(args.attempt_file, args.version, "waiting-for-app")
+        tray.update("Waiting for SteamyLAN to close…")
         _wait_for_parent(args.parent_pid)
         parent_stopped = True
-        stage_root = _extract_archive(archive, install_dir.parent)
-        _swap_and_launch(stage_root, install_dir, args.exe)
+        _write_attempt(args.attempt_file, args.version, "extracting")
+        tray.update("Preparing the update…")
+        stage_root = _extract_archive(archive, install_dir.parent, tray)
+        _write_attempt(args.attempt_file, args.version, "installing")
+        _swap_and_launch(stage_root, install_dir, args.exe, tray)
         succeeded = True
+        args.attempt_file.unlink(missing_ok=True)
+        (install_dir.parent / "SteamyLAN-update-failed.json").unlink(missing_ok=True)
         return 0
     except Exception as exc:
         log_path = install_dir.parent / "SteamyLAN-update-error.log"
@@ -169,6 +290,8 @@ def main() -> int:
             log_path.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
         except OSError:
             pass
+        _record_failure(install_dir, args.version, exc, args.attempt_file)
+        tray.update("Update failed — restoring the previous version…")
         if parent_stopped:
             try:
                 _launch_existing(install_dir, args.exe)
@@ -184,6 +307,7 @@ def main() -> int:
             archive.unlink(missing_ok=True)
         if stage_root is not None:
             shutil.rmtree(stage_root.parent, ignore_errors=True)
+        tray.close()
 
 
 if __name__ == "__main__":

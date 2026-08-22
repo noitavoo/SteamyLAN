@@ -48,7 +48,7 @@ if errorlevel 1 goto :windivert_copy_failed
 copy /Y "third_party\windivert\x64\WinDivert64.sys" "dist\SteamyLAN\WinDivert64.sys" >nul
 if errorlevel 1 goto :windivert_copy_failed
 
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name SteamyLANUpdate tools\update_helper.py
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name SteamyLANUpdate --icon SteamyLan\steamylan.ico tools\update_helper.py
 if errorlevel 1 goto :updater_build_failed
 if not exist "dist\SteamyLANUpdate.exe" goto :updater_build_missing
 copy /Y "dist\SteamyLANUpdate.exe" "dist\SteamyLAN\SteamyLANUpdate.exe" >nul

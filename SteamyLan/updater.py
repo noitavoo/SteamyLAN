@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -43,6 +44,83 @@ class UpdateInfo:
     @property
     def installable(self) -> bool:
         return self.download_url.lower().endswith(".zip") and bool(self.asset_name)
+
+
+def update_state_directory(install_dir: Path | None = None) -> Path:
+    """Keep update transaction state outside the directory being replaced."""
+    root = Path(install_dir) if install_dir is not None else update_cache_directory()
+    return root.parent
+
+
+def _state_path(name: str, install_dir: Path | None = None) -> Path:
+    return update_state_directory(install_dir) / name
+
+
+def _write_state(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _read_state(path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def update_attempt_path(install_dir: Path | None = None) -> Path:
+    return _state_path("SteamyLAN-update-attempt.json", install_dir)
+
+
+def update_failure_path(install_dir: Path | None = None) -> Path:
+    return _state_path("SteamyLAN-update-failed.json", install_dir)
+
+
+def begin_update_attempt(version: str, archive: Path, install_dir: Path) -> Path:
+    """Persist a one-shot update intent before the current app exits.
+
+    A surviving marker means the helper crashed or was interrupted.  The next
+    automatic update check will not retry that same version and cause a loop.
+    """
+    marker = update_attempt_path(install_dir)
+    existing = _read_state(marker)
+    if existing:
+        raise UpdateCheckError(
+            "A previous update did not finish. Restart SteamyLAN normally and install a newer release manually."
+        )
+    _write_state(marker, {
+        "version": str(version),
+        "archive": str(Path(archive).resolve()),
+        "started_at": time.time(),
+    })
+    return marker
+
+
+def record_update_failure(version: str, reason: str, install_dir: Path) -> None:
+    _write_state(update_failure_path(install_dir), {
+        "version": str(version),
+        "reason": str(reason)[:2000],
+        "failed_at": time.time(),
+    })
+    update_attempt_path(install_dir).unlink(missing_ok=True)
+
+
+def clear_update_state(install_dir: Path) -> None:
+    update_attempt_path(install_dir).unlink(missing_ok=True)
+    update_failure_path(install_dir).unlink(missing_ok=True)
+
+
+def update_version_is_blocked(version: str, install_dir: Path | None = None) -> bool:
+    """Return whether a version previously failed or was interrupted."""
+    requested = str(version).strip().lstrip("vV")
+    for marker in (update_attempt_path(install_dir), update_failure_path(install_dir)):
+        saved = str(_read_state(marker).get("version") or "").strip().lstrip("vV")
+        if saved and saved == requested:
+            return True
+    return False
 
 
 def update_cache_directory() -> Path:
@@ -162,7 +240,7 @@ def download_update(info: UpdateInfo, cache_dir: Path | None = None) -> Path:
         raise
 
 
-def launch_update_helper(archive: Path, parent_pid: int) -> None:
+def launch_update_helper(archive: Path, parent_pid: int, version: str) -> None:
     """Start the detached Windows updater and return before the app exits."""
     if not getattr(sys, "frozen", False):
         raise UpdateCheckError("Automatic installation is available in the packaged Windows app.")
@@ -170,6 +248,7 @@ def launch_update_helper(archive: Path, parent_pid: int) -> None:
     helper = install_dir / "SteamyLANUpdate.exe"
     if not helper.is_file():
         raise UpdateCheckError("The updater helper is missing from this installation.")
+    attempt = begin_update_attempt(str(version), Path(archive), install_dir)
     fd, helper_copy_name = tempfile.mkstemp(prefix="SteamyLANUpdate-", suffix=".exe")
     os.close(fd)
     helper_copy = Path(helper_copy_name)
@@ -178,6 +257,7 @@ def launch_update_helper(archive: Path, parent_pid: int) -> None:
         shutil.copy2(helper, helper_copy)
     except Exception:
         helper_copy.unlink(missing_ok=True)
+        attempt.unlink(missing_ok=True)
         raise UpdateCheckError("Could not prepare the updater helper.")
     command = [
         str(helper_copy),
@@ -185,12 +265,19 @@ def launch_update_helper(archive: Path, parent_pid: int) -> None:
         "--install-dir", str(install_dir),
         "--parent-pid", str(int(parent_pid)),
         "--exe", "SteamyLAN.exe",
+        "--version", str(version),
+        "--attempt-file", str(attempt),
     ]
     flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
     # Do not use install_dir as the helper's current directory. Windows can
     # keep a current-directory handle open, preventing the helper from moving
     # the directory it is about to replace.
-    subprocess.Popen(command, cwd=str(install_dir.parent), creationflags=flags, close_fds=True)
+    try:
+        subprocess.Popen(command, cwd=str(install_dir.parent), creationflags=flags, close_fds=True)
+    except Exception:
+        attempt.unlink(missing_ok=True)
+        helper_copy.unlink(missing_ok=True)
+        raise
 
 
 def check_for_update() -> UpdateInfo:

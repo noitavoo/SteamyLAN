@@ -11,6 +11,12 @@ from SteamyLan.settings import PreferenceStore
 
 
 class BindAddressTests(unittest.TestCase):
+    def test_new_preferences_notify_before_installing_updates(self):
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch("SteamyLan.settings.user_config_dir", return_value=td):
+                store = PreferenceStore()
+            self.assertEqual(store.prefs.update_mode, "notify")
+
     def test_normalize_bind_address_accepts_ipv4_and_ipv6(self):
         self.assertEqual(PreferenceStore.normalize_bind_address(" 0.0.0.0 "), "0.0.0.0")
         self.assertEqual(PreferenceStore.normalize_bind_address("127.0.0.1"), "127.0.0.1")
