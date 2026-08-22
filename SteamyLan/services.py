@@ -312,10 +312,6 @@ class SteamService(QObject):
 
         while not self._shutting_down:
             if self.steam.logged_on():
-                # The first networking-config pass can run while Steam is still
-                # signing in. Re-prime SDR after BLoggedOn becomes authoritative
-                # so the first remote peer does not pay the relay setup delay.
-                self.steam.prime_networking()
                 return self.steam.persona_name(), self.steam.steam_id()
             time.sleep(0.25)
         return None
@@ -846,7 +842,6 @@ class SessionManager(QObject):
             member_count=1,
         )
         try:
-            self.steam.prime_networking()
             handle = self.steam.create_lobby(max_members, self._steam_lobby_type(visibility))
             self.steam.await_call(
                 handle,
@@ -1018,7 +1013,6 @@ class SessionManager(QObject):
         self._join_loading = False
         self._join_call_started = False
         self._code_invite_pending = True
-        self.steam.prime_networking()
         self._set(
             mode="joining",
             status="Verifying share code…",
@@ -1098,7 +1092,6 @@ class SessionManager(QObject):
             self._invite_broker.stop()
             self._invite_broker = None
         try:
-            self.steam.prime_networking()
             handle = self.steam.join_lobby(host.lobby_id)
             self.steam.await_call(
                 handle,

@@ -706,7 +706,15 @@ class SteamClient:
 
     def _resolve_interfaces(self) -> None:
         d = self.dll
-        user_fn, _ = self._find_export(d, ["SteamAPI_SteamUser_v023"])
+        # Only use methods that have been stable across these interface
+        # revisions.  Accept compatible older Steamworks redistributables
+        # instead of rejecting a signed-in Steam client over a newer revision
+        # that this application does not require.
+        user_fn, _ = self._find_export(d, [
+            "SteamAPI_SteamUser_v023",
+            "SteamAPI_SteamUser_v022",
+            "SteamAPI_SteamUser_v021",
+        ])
         # The newest interface version depends on the Steamworks DLL supplied
         # with the build. Keep older compatible versions as fallbacks so one
         # missing version does not disable all Steam features.
@@ -719,9 +727,19 @@ class SteamClient:
                 "SteamAPI_SteamFriends_v015",
             ],
         )
-        utils_fn, _ = self._find_export(d, ["SteamAPI_SteamUtils_v011"])
-        matchmaking_fn, _ = self._find_export(d, ["SteamAPI_SteamMatchmaking_v009"])
-        networking_fn, _ = self._find_export(d, ["SteamAPI_SteamNetworking_v006"])
+        utils_fn, _ = self._find_export(d, [
+            "SteamAPI_SteamUtils_v011",
+            "SteamAPI_SteamUtils_v010",
+            "SteamAPI_SteamUtils_v009",
+        ])
+        matchmaking_fn, _ = self._find_export(d, [
+            "SteamAPI_SteamMatchmaking_v009",
+            "SteamAPI_SteamMatchmaking_v008",
+        ])
+        networking_fn, _ = self._find_export(d, [
+            "SteamAPI_SteamNetworking_v006",
+            "SteamAPI_SteamNetworking_v005",
+        ])
         for fn in (
             user_fn,
             friends_fn,

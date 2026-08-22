@@ -14,7 +14,11 @@ Each successful run:
 6. trims packaging-only/debug files from the runtime build;
 7. creates a folder named exactly `SteamyLAN`;
 8. creates a versioned asset such as `SteamyLAN_v1.0.0.zip`, whose single top-level folder is exactly `SteamyLAN/`;
-9. creates the matching GitHub Release/tag (for example `v1.0.0`) and uploads the matching versioned ZIP.
+9. creates the matching GitHub Release/tag (for example `v1.0.0`) as a prerelease and uploads the matching versioned ZIP.
+
+Every workflow build is intentionally published as a **prerelease**. After you
+have verified it, promote the release manually on GitHub by editing the release
+and clearing the **Set as a pre-release** checkbox.
 
 Versioning starts again at `1.0.0` and uses one decimal patch digit:
 
@@ -81,4 +85,4 @@ This allows the workflow's `GITHUB_TOKEN` to create release tags/releases and up
 
 ## Manual rebuild
 
-The workflow also supports **Run workflow** from the GitHub Actions page. Rebuilding a commit that already has a release reuses its tag and replaces the existing versioned ZIP asset instead of creating a duplicate release.
+The workflow also supports **Run workflow** from the GitHub Actions page. Rebuilding a commit that already has a release reuses its tag, marks it as a prerelease again, and replaces the existing versioned ZIP asset instead of creating a duplicate release.

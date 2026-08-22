@@ -304,6 +304,14 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               exit $LASTEXITCODE
             }
+
+            # Workflow output always remains a prerelease. Promote it from
+            # GitHub's Releases page only after manual verification.
+            gh release edit "$env:RELEASE_TAG" --prerelease
+
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
           }
           else {
             Write-Host "Creating release $env:RELEASE_TAG."
@@ -315,7 +323,7 @@ jobs:
               --target "$env:GITHUB_SHA" `
               --title "$title" `
               --generate-notes `
-              --latest
+              --prerelease
 
             if ($LASTEXITCODE -ne 0) {
               exit $LASTEXITCODE
