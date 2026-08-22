@@ -5,7 +5,7 @@
 <br clear="left"/>
 
 SteamyLAN enables you to play LAN games with your friends! Create game servers with other Steam users without router port forwarding.
-[Download SteamyLAN (Windows 64bit)](https://github.com/noitavoo/SteamyLAN/releases/latest)
+[Download the latest SteamyLAN (Windows 64bit)](https://github.com/noitavoo/SteamyLAN/releases/latest)
 
 ### Screenshots
 <img width="1370" height="862" alt="image" src="https://github.com/user-attachments/assets/63fc5387-0fec-4cef-a851-ae77e65e4aeb" />
@@ -24,9 +24,7 @@ Open **Lobbies** and select a server, accept a Steam invite, or paste a SteamyLA
 
 Once connected, SteamyLAN displays the local `localhost:<port>` address to use in the game.
 
-The **Server** page shows each member's live P2P state, round-trip ping, transfer rates, and Steam ID. A connection is ready when it reports **P2P online**; **P2P connecting** means Steam is still finding a direct or relay route, and **P2P no response** means SteamyLAN is retrying the peer session.
-
-Chat follows new messages only while you are already at the latest message. If you scroll back, the viewport stays in place and the **Latest** button shows how many new messages arrived.
+##### The **Server** page shows each member's live P2P state. A connection is ready when it reports **P2P online**; **P2P connecting** means Steam is still finding a direct or relay route, and **P2P no response** means SteamyLAN is retrying the peer session.
 
 ## Requirements
 
