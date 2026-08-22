@@ -103,10 +103,6 @@ def main(argv=None) -> int:
     steam_client = SteamClient(
         logger,
         app_id=prefs.effective_app_id(),
-        relay_mode=prefs.prefs.relay_mode,
-        relay_location=prefs.prefs.relay_location,
-        upload_limit_kbps=prefs.prefs.upload_limit_kbps,
-        download_limit_kbps=prefs.prefs.download_limit_kbps,
     )
     steam_service = SteamService(steam_client, logger)
     detection = DetectionService(logger)

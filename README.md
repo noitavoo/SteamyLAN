@@ -29,8 +29,8 @@ join the lobby and click **Enable LAN discovery** on the Server page. Windows
 asks for administrator approval, then SteamyLAN remembers the feature for that
 session. Automatic activation is available as an opt-in setting.
 The elevated helper redirects broadcasts only for the exact ports in the
-active lobby to `127.0.0.1`; it does not expose those ports to the physical
-LAN, install a virtual adapter, or capture traffic outside those discovery
+active lobby to `0.0.0.0`; it does not install a virtual adapter or capture
+traffic outside those discovery
 ports. The helper and its packet filter stop when you disconnect. Automatic
 activation can be disabled in Settings.
 

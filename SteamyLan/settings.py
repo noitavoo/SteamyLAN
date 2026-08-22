@@ -26,12 +26,8 @@ class Preferences:
     check_updates_on_start: bool = True
     update_mode: str = "automatic"
     custom_app_id: str = ""
-    relay_mode: str = "automatic"
-    relay_location: str = "automatic"
-    bind_address: str = "127.0.0.1"
+    bind_address: str = "0.0.0.0"
     show_steam_status: bool = True
-    upload_limit_kbps: int = 0
-    download_limit_kbps: int = 0
     last_page: str = "join"
     window_geometry: str = ""
     last_service_key: str = ""
@@ -74,13 +70,7 @@ class PreferenceStore:
             prefs.last_page = "join"
         if prefs.update_mode not in {"automatic", "notify", "disabled"}:
             prefs.update_mode = "automatic"
-        if prefs.relay_mode not in {"automatic", "prefer_direct", "force_direct", "prefer_relay", "force_relay"}:
-            prefs.relay_mode = "automatic"
-        relay_location = str(prefs.relay_location or "automatic").strip().casefold()
-        prefs.relay_location = relay_location if relay_location == "automatic" or (3 <= len(relay_location) <= 4 and relay_location.isalnum()) else "automatic"
-        prefs.bind_address = self.normalize_bind_address(prefs.bind_address) or "127.0.0.1"
-        prefs.upload_limit_kbps = max(0, min(1_000_000, int(prefs.upload_limit_kbps)))
-        prefs.download_limit_kbps = max(0, min(1_000_000, int(prefs.download_limit_kbps)))
+        prefs.bind_address = self.normalize_bind_address(prefs.bind_address) or "0.0.0.0"
         prefs.custom_app_id = self._normalize_app_id_text(prefs.custom_app_id)
         return prefs
 

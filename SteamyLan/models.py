@@ -260,7 +260,7 @@ class LocalMapping:
     protocol: str
     remote_port: int
     local_port: int
-    bind_host: str = "127.0.0.1"
+    bind_host: str = "0.0.0.0"
 
     @property
     def address(self) -> str:

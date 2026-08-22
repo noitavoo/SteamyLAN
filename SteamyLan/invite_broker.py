@@ -105,21 +105,21 @@ class InviteBroker:
     def _rx_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                items = self.steam.recv_packets(INVITE_CHANNEL, 32)
-                if not items:
+                item = self.steam.recv_packet(INVITE_CHANNEL)
+                if item is None:
                     self._stop.wait(0.012)
                     continue
-                for sender, raw in items:
-                    parsed = unpack_packet(raw)
-                    if parsed is None:
-                        continue
-                    kind, proto, stream_id, payload = parsed
-                    if proto != PROTO_INVITE or stream_id != 0:
-                        continue
-                    if self.role == "host":
-                        self._handle_host(int(sender), kind, payload)
-                    else:
-                        self._handle_client(int(sender), kind, payload)
+                sender, raw = item
+                parsed = unpack_packet(raw)
+                if parsed is None:
+                    continue
+                kind, proto, stream_id, payload = parsed
+                if proto != PROTO_INVITE or stream_id != 0:
+                    continue
+                if self.role == "host":
+                    self._handle_host(int(sender), kind, payload)
+                else:
+                    self._handle_client(int(sender), kind, payload)
             except Exception:
                 if not self._stop.is_set():
                     self.log.exception("SteamyLAN invite rendezvous receive loop failed")

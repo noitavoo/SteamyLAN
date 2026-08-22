@@ -36,49 +36,6 @@ from .models import FriendInfo
 
 
 
-_STEAM_NET_CONFIG_GLOBAL = 1
-_STEAM_NET_CONFIG_INT32 = 1
-_STEAM_NET_CONFIG_STRING = 4
-_STEAM_NET_CONFIG_SEND_RATE_MIN = 10
-_STEAM_NET_CONFIG_SEND_RATE_MAX = 11
-_STEAM_NET_CONFIG_P2P_ICE_ENABLE = 104
-_STEAM_NET_CONFIG_P2P_ICE_PENALTY = 105
-_STEAM_NET_CONFIG_P2P_SDR_PENALTY = 106
-_STEAM_NET_CONFIG_SDR_FORCE_RELAY_CLUSTER = 29
-_STEAM_NET_ICE_DISABLE = 0
-_STEAM_NET_ICE_ALL = 0x7FFFFFFF
-
-
-class _RateLimiter:
-    """Thread-safe shared byte-rate limiter used for user bandwidth caps."""
-
-    def __init__(self, bytes_per_second: int = 0):
-        self._lock = threading.Lock()
-        self._rate = max(0, int(bytes_per_second))
-        self._next_time = 0.0
-
-    def set_rate(self, bytes_per_second: int) -> None:
-        with self._lock:
-            self._rate = max(0, int(bytes_per_second))
-            self._next_time = 0.0
-
-    def wait(self, byte_count: int) -> None:
-        size = max(0, int(byte_count))
-        if size <= 0:
-            return
-        delay = 0.0
-        with self._lock:
-            rate = self._rate
-            if rate <= 0:
-                return
-            now = time.monotonic()
-            start = max(now, self._next_time)
-            self._next_time = start + (size / rate)
-            delay = start - now
-        if delay > 0:
-            time.sleep(delay)
-
-
 class SteamError(RuntimeError):
     pass
 
@@ -481,10 +438,6 @@ class SteamClient:
         logger,
         *,
         app_id: int = DEFAULT_APP_ID,
-        relay_mode: str = "automatic",
-        upload_limit_kbps: int = 0,
-        download_limit_kbps: int = 0,
-        relay_location: str = "automatic",
     ):
         self.log = logger
         self.app_id = max(1, min(0xFFFFFFFF, int(app_id)))
@@ -494,18 +447,10 @@ class SteamClient:
         self.utils = None
         self.matchmaking = None
         self.networking = None
-        self.networking_utils = None
         self.pipe = 0
         self.initialized = False
         self._api_started = False
         self.dll_path: Path | None = None
-
-        self._relay_mode = "automatic"
-        self._upload_limit_kbps = 0
-        self._download_limit_kbps = 0
-        self._relay_location = "automatic"
-        self._upload_limiter = _RateLimiter()
-        self._download_limiter = _RateLimiter()
 
         self._stop = threading.Event()
         self._dispatch_thread: threading.Thread | None = None
@@ -519,14 +464,7 @@ class SteamClient:
         self._completed_unclaimed: dict[int, SteamAPICallCompleted] = {}
         self._pending_lock = threading.RLock()
         self._networking_lock = threading.RLock()
-        self._peer_traffic: dict[int, dict[str, float]] = {}
         self._dll_directory_handles: list[object] = []
-        self.configure_network(
-            relay_mode=relay_mode,
-            upload_limit_kbps=upload_limit_kbps,
-            download_limit_kbps=download_limit_kbps,
-            relay_location=relay_location,
-        )
 
     @staticmethod
     def _find_export(dll, names: list[str]):
@@ -705,7 +643,9 @@ class SteamClient:
 
             self._resolve_interfaces()
             self._bind_interface_exports()
-            self._apply_network_config()
+            # Match the established legacy P2P behavior: allow Steam to use a
+            # relay when it needs one, and otherwise let Steam choose the route.
+            d.SteamAPI_ISteamNetworking_AllowP2PPacketRelay(self.networking, True)
         except Exception:
             if self._api_started:
                 try:
@@ -716,7 +656,7 @@ class SteamClient:
                 except Exception:
                     pass
             self._api_started = False
-            self.user = self.friends = self.utils = self.matchmaking = self.networking = self.networking_utils = None
+            self.user = self.friends = self.utils = self.matchmaking = self.networking = None
             self.pipe = 0
             raise
 
@@ -782,16 +722,12 @@ class SteamClient:
         utils_fn, _ = self._find_export(d, ["SteamAPI_SteamUtils_v011"])
         matchmaking_fn, _ = self._find_export(d, ["SteamAPI_SteamMatchmaking_v009"])
         networking_fn, _ = self._find_export(d, ["SteamAPI_SteamNetworking_v006"])
-        networking_utils_fn, _ = self._find_export(
-            d, ["SteamAPI_SteamNetworkingUtils_SteamAPI_v004"]
-        )
         for fn in (
             user_fn,
             friends_fn,
             utils_fn,
             matchmaking_fn,
             networking_fn,
-            networking_utils_fn,
         ):
             fn.argtypes = []
             fn.restype = ctypes.c_void_p
@@ -801,14 +737,12 @@ class SteamClient:
         self.utils = utils_fn()
         self.matchmaking = matchmaking_fn()
         self.networking = networking_fn()
-        self.networking_utils = networking_utils_fn()
         if not all((
             self.user,
             self.friends,
             self.utils,
             self.matchmaking,
             self.networking,
-            self.networking_utils,
         )):
             raise SteamError("One or more Steam interfaces returned NULL.")
 
@@ -918,123 +852,6 @@ class SteamClient:
         d.SteamAPI_ISteamNetworking_CloseP2PSessionWithUser.restype = ctypes.c_bool
         d.SteamAPI_ISteamNetworking_AllowP2PPacketRelay.argtypes = [ctypes.c_void_p, ctypes.c_bool]
         d.SteamAPI_ISteamNetworking_AllowP2PPacketRelay.restype = ctypes.c_bool
-        d.SteamAPI_ISteamNetworkingUtils_SetConfigValue.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_ssize_t,
-            ctypes.c_int,
-            ctypes.c_void_p,
-        ]
-        d.SteamAPI_ISteamNetworkingUtils_SetConfigValue.restype = ctypes.c_bool
-        try:
-            d.SteamAPI_ISteamNetworkingUtils_InitRelayNetworkAccess.argtypes = [ctypes.c_void_p]
-            d.SteamAPI_ISteamNetworkingUtils_InitRelayNetworkAccess.restype = None
-        except AttributeError:
-            pass
-        d.SteamAPI_ISteamNetworkingUtils_GetPOPCount.argtypes = [ctypes.c_void_p]
-        d.SteamAPI_ISteamNetworkingUtils_GetPOPCount.restype = ctypes.c_int
-        d.SteamAPI_ISteamNetworkingUtils_GetPOPList.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_int]
-        d.SteamAPI_ISteamNetworkingUtils_GetPOPList.restype = ctypes.c_int
-        d.SteamAPI_ISteamNetworkingUtils_GetPingToDataCenter.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)]
-        d.SteamAPI_ISteamNetworkingUtils_GetPingToDataCenter.restype = ctypes.c_int
-
-    @staticmethod
-    def _kbps_to_bytes_per_second(value: int) -> int:
-        return max(0, int(value)) * 1000 // 8
-
-    def configure_network(
-        self,
-        *,
-        relay_mode: str,
-        upload_limit_kbps: int,
-        download_limit_kbps: int,
-        relay_location: str = "automatic",
-    ) -> None:
-        mode = str(relay_mode or "automatic")
-        if mode not in {"automatic", "prefer_direct", "force_direct", "prefer_relay", "force_relay"}:
-            mode = "automatic"
-        self._relay_mode = mode
-        self._upload_limit_kbps = max(0, min(1_000_000, int(upload_limit_kbps)))
-        self._download_limit_kbps = max(0, min(1_000_000, int(download_limit_kbps)))
-        location = str(relay_location or "automatic").strip().casefold()
-        self._relay_location = location if location == "automatic" or (3 <= len(location) <= 4 and location.isalnum()) else "automatic"
-        self._upload_limiter.set_rate(self._kbps_to_bytes_per_second(self._upload_limit_kbps))
-        self._download_limiter.set_rate(self._kbps_to_bytes_per_second(self._download_limit_kbps))
-        if self.initialized and self.networking_utils:
-            self._apply_network_config()
-
-    def _set_global_int32(self, value_id: int, value: int | None) -> bool:
-        if not self.networking_utils or not self.dll:
-            return False
-        ptr = None
-        native = None
-        if value is not None:
-            native = ctypes.c_int32(int(value))
-            ptr = ctypes.cast(ctypes.byref(native), ctypes.c_void_p)
-        return bool(
-            self.dll.SteamAPI_ISteamNetworkingUtils_SetConfigValue(
-                self.networking_utils,
-                int(value_id),
-                _STEAM_NET_CONFIG_GLOBAL,
-                0,
-                _STEAM_NET_CONFIG_INT32,
-                ptr,
-            )
-        )
-
-    def _set_global_string(self, value_id: int, value: str | None) -> bool:
-        if not self.networking_utils or not self.dll:
-            return False
-        if value is None:
-            ptr = None
-            buffer = None
-        else:
-            buffer = ctypes.create_string_buffer(str(value).encode("ascii", "ignore"))
-            ptr = ctypes.cast(buffer, ctypes.c_void_p)
-        return bool(
-            self.dll.SteamAPI_ISteamNetworkingUtils_SetConfigValue(
-                self.networking_utils,
-                int(value_id),
-                _STEAM_NET_CONFIG_GLOBAL,
-                0,
-                _STEAM_NET_CONFIG_STRING,
-                ptr,
-            )
-        )
-
-    @staticmethod
-    def _pop_code(pop_id: int) -> str:
-        value = int(pop_id) & 0xFFFFFFFF
-        chars = [value >> 16, value >> 8, value, value >> 24]
-        return "".join(chr(ch & 0xFF) for ch in chars if ch & 0xFF).casefold()
-
-    def relay_locations(self) -> list[tuple[str, int]]:
-        if not self.initialized or not self.networking_utils or not self.dll:
-            return []
-        try:
-            self.dll.SteamAPI_ISteamNetworkingUtils_InitRelayNetworkAccess(self.networking_utils)
-            count = int(self.dll.SteamAPI_ISteamNetworkingUtils_GetPOPCount(self.networking_utils))
-            if count <= 0:
-                return []
-            count = min(count, 512)
-            values = (ctypes.c_uint32 * count)()
-            filled = int(self.dll.SteamAPI_ISteamNetworkingUtils_GetPOPList(self.networking_utils, values, count))
-            rows: list[tuple[str, int]] = []
-            for index in range(max(0, min(filled, count))):
-                pop_id = int(values[index])
-                code = self._pop_code(pop_id)
-                if not code or not code.isalnum():
-                    continue
-                via = ctypes.c_uint32(0)
-                ping = int(self.dll.SteamAPI_ISteamNetworkingUtils_GetPingToDataCenter(self.networking_utils, pop_id, ctypes.byref(via)))
-                rows.append((code, ping))
-            rows.sort(key=lambda item: (item[1] < 0, item[1] if item[1] >= 0 else 1_000_000, item[0]))
-            return rows
-        except Exception:
-            self.log.exception("Could not enumerate Steam relay locations")
-            return []
-
     @staticmethod
     def _rich_presence_text(value: str, max_bytes: int = 255) -> str:
         """Normalize and UTF-8 truncate a Steam rich-presence value."""
@@ -1090,76 +907,6 @@ class SteamClient:
         except Exception:
             self.log.exception("Could not clear Steam rich presence")
 
-    def _apply_network_config(self) -> None:
-        if not self.dll:
-            return
-        try:
-            if self.networking:
-                self.dll.SteamAPI_ISteamNetworking_AllowP2PPacketRelay(
-                    self.networking,
-                    self._relay_mode != "force_direct",
-                )
-            if not self.networking_utils:
-                return
-            if self._relay_mode == "force_relay":
-                self._set_global_int32(_STEAM_NET_CONFIG_P2P_ICE_ENABLE, _STEAM_NET_ICE_DISABLE)
-                self._set_global_int32(_STEAM_NET_CONFIG_P2P_ICE_PENALTY, None)
-                self._set_global_int32(_STEAM_NET_CONFIG_P2P_SDR_PENALTY, None)
-            elif self._relay_mode == "prefer_relay":
-                self._set_global_int32(_STEAM_NET_CONFIG_P2P_ICE_ENABLE, _STEAM_NET_ICE_ALL)
-                self._set_global_int32(_STEAM_NET_CONFIG_P2P_ICE_PENALTY, 1000)
-                self._set_global_int32(_STEAM_NET_CONFIG_P2P_SDR_PENALTY, 0)
-            elif self._relay_mode == "force_direct":
-                self._set_global_int32(_STEAM_NET_CONFIG_P2P_ICE_ENABLE, _STEAM_NET_ICE_ALL)
-                self._set_global_int32(_STEAM_NET_CONFIG_P2P_ICE_PENALTY, 0)
-                self._set_global_int32(_STEAM_NET_CONFIG_P2P_SDR_PENALTY, 0x7FFFFFFF)
-            elif self._relay_mode == "prefer_direct":
-                self._set_global_int32(_STEAM_NET_CONFIG_P2P_ICE_ENABLE, _STEAM_NET_ICE_ALL)
-                self._set_global_int32(_STEAM_NET_CONFIG_P2P_ICE_PENALTY, 0)
-                self._set_global_int32(_STEAM_NET_CONFIG_P2P_SDR_PENALTY, 1000)
-            else:
-                self._set_global_int32(_STEAM_NET_CONFIG_P2P_ICE_ENABLE, None)
-                self._set_global_int32(_STEAM_NET_CONFIG_P2P_ICE_PENALTY, None)
-                self._set_global_int32(_STEAM_NET_CONFIG_P2P_SDR_PENALTY, None)
-
-            # Prime Steam's relay/network configuration before the first P2P
-            # message. Automatic/prefer modes can still select a direct ICE
-            # route, but fetching relay configuration early avoids adding that
-            # work to the first peer handshake.
-            self.prime_networking()
-
-            if self._relay_location == "automatic":
-                self._set_global_string(_STEAM_NET_CONFIG_SDR_FORCE_RELAY_CLUSTER, None)
-            else:
-                self._set_global_string(_STEAM_NET_CONFIG_SDR_FORCE_RELAY_CLUSTER, self._relay_location)
-
-            send_rate = self._kbps_to_bytes_per_second(self._upload_limit_kbps)
-            if send_rate > 0:
-                send_rate = max(1024, min(0x7FFFFFFF, send_rate))
-                self._set_global_int32(_STEAM_NET_CONFIG_SEND_RATE_MIN, send_rate)
-                self._set_global_int32(_STEAM_NET_CONFIG_SEND_RATE_MAX, send_rate)
-            else:
-                self._set_global_int32(_STEAM_NET_CONFIG_SEND_RATE_MIN, None)
-                self._set_global_int32(_STEAM_NET_CONFIG_SEND_RATE_MAX, None)
-        except Exception:
-            self.log.exception("Could not apply Steam networking preferences")
-
-    def prime_networking(self) -> None:
-        """Ask Steam to prepare SDR/relay access once networking is usable.
-
-        The initial config pass can occur before SteamUser reports logged on.
-        Calling this again after sign-in is cheap and makes sure relay metadata
-        is ready before the first cross-network peer handshake.
-        """
-        if self._relay_mode == "force_direct" or not self.networking_utils or not self.dll:
-            return
-        try:
-            fn = getattr(self.dll, "SteamAPI_ISteamNetworkingUtils_InitRelayNetworkAccess", None)
-            if fn is not None:
-                fn(self.networking_utils)
-        except Exception:
-            self.log.debug("Could not prewarm Steam relay networking", exc_info=True)
-
     def shutdown(self) -> None:
         self._stop.set()
         thread = self._dispatch_thread
@@ -1175,9 +922,7 @@ class SteamClient:
         self.initialized = False
         self._rich_presence_value = None
         self.pipe = 0
-        self.user = self.friends = self.utils = self.matchmaking = self.networking = self.networking_utils = None
-        with self._networking_lock:
-            self._peer_traffic.clear()
+        self.user = self.friends = self.utils = self.matchmaking = self.networking = None
         with self._pending_lock:
             self._pending_calls.clear()
             self._completed_unclaimed.clear()
@@ -1471,39 +1216,9 @@ class SteamClient:
 
 
 
-    def _record_peer_traffic(self, steam_id: int, *, sent: int = 0, received: int = 0) -> None:
-        sid = int(steam_id)
-        now = time.monotonic()
-        row = self._peer_traffic.setdefault(
-            sid,
-            {
-                "sample_time": now,
-                "sent": 0.0,
-                "received": 0.0,
-                "sample_sent": 0.0,
-                "sample_received": 0.0,
-                "upload_bps": 0.0,
-                "download_bps": 0.0,
-            },
-        )
-        row["sent"] += max(0, int(sent))
-        row["received"] += max(0, int(received))
-
     def peer_network_stats(self, steam_id: int) -> tuple[int, float, float]:
-        if not self.initialized or not self.networking:
-            return -1, 0.0, 0.0
-        with self._networking_lock:
-            self._record_peer_traffic(steam_id)
-            row = self._peer_traffic[int(steam_id)]
-            now = time.monotonic()
-            elapsed = now - row["sample_time"]
-            if elapsed >= 0.25:
-                row["upload_bps"] = max(0.0, (row["sent"] - row["sample_sent"]) / elapsed)
-                row["download_bps"] = max(0.0, (row["received"] - row["sample_received"]) / elapsed)
-                row["sample_sent"] = row["sent"]
-                row["sample_received"] = row["received"]
-                row["sample_time"] = now
-            return -1, row["upload_bps"], row["download_bps"]
+        # The older P2P interface exposes no route/throughput telemetry.
+        return -1, 0.0, 0.0
 
     def accept_peer(self, steam_id: int) -> bool:
         with self._networking_lock:
@@ -1521,20 +1236,16 @@ class SteamClient:
                     self.networking,
                     ctypes.c_uint64(int(steam_id)),
                 )
-                self._peer_traffic.pop(int(steam_id), None)
         except Exception:
             self.log.exception("Failed to close Steam P2P session")
 
     def send_packet(self, steam_id: int, packet: bytes, channel: int, reliable: bool = True) -> bool:
-        if len(packet) > MAX_STEAM_PACKET:
-            raise ValueError(f"Steam P2P packet exceeds SteamyLAN's {MAX_STEAM_PACKET}-byte limit.")
-        if not reliable and len(packet) > 1200:
-            raise ValueError("Unreliable Steam P2P packets are limited to 1200 bytes.")
-        self._upload_limiter.wait(len(packet))
         buf = ctypes.create_string_buffer(packet)
+        # The NoDelay variant can drop a UDP datagram while the legacy P2P
+        # route is opening, so retain the established reliable/unreliable mode.
         mode = P2P_RELIABLE if reliable else P2P_UNRELIABLE
         with self._networking_lock:
-            accepted = bool(
+            return bool(
                 self.dll.SteamAPI_ISteamNetworking_SendP2PPacket(
                     self.networking,
                     ctypes.c_uint64(int(steam_id)),
@@ -1544,54 +1255,36 @@ class SteamClient:
                     int(channel),
                 )
             )
-            if accepted:
-                self._record_peer_traffic(steam_id, sent=len(packet))
-            return accepted
 
-    def recv_packets(self, channel: int, max_messages: int = 32) -> list[tuple[int, bytes]]:
-        limit = max(1, min(64, int(max_messages)))
-        results: list[tuple[int, bytes]] = []
-        total_bytes = 0
-        for _ in range(limit):
-            with self._networking_lock:
-                size = ctypes.c_uint32(0)
-                if not self.dll.SteamAPI_ISteamNetworking_IsP2PPacketAvailable(
-                    self.networking, ctypes.byref(size), int(channel)
-                ):
-                    break
-                capacity = int(size.value)
-                if not (0 < capacity <= MAX_STEAM_PACKET):
-                    discard = ctypes.create_string_buffer(1)
-                    read = ctypes.c_uint32(0)
-                    sender = ctypes.c_uint64(0)
+    def recv_packet(self, channel: int):
+        with self._networking_lock:
+            size = ctypes.c_uint32(0)
+            if not self.dll.SteamAPI_ISteamNetworking_IsP2PPacketAvailable(
+                self.networking, ctypes.byref(size), int(channel)
+            ):
+                return None
+            if not (0 < size.value <= MAX_STEAM_PACKET):
+                discard = ctypes.create_string_buffer(1)
+                read = ctypes.c_uint32(0)
+                sender = ctypes.c_uint64(0)
+                try:
                     self.dll.SteamAPI_ISteamNetworking_ReadP2PPacket(
                         self.networking, ctypes.cast(discard, ctypes.c_void_p), 1,
                         ctypes.byref(read), ctypes.byref(sender), int(channel),
                     )
-                    continue
-                buf = ctypes.create_string_buffer(capacity)
-                read = ctypes.c_uint32(0)
-                sender = ctypes.c_uint64(0)
-                ok = bool(self.dll.SteamAPI_ISteamNetworking_ReadP2PPacket(
-                    self.networking, ctypes.cast(buf, ctypes.c_void_p), capacity,
-                    ctypes.byref(read), ctypes.byref(sender), int(channel),
-                ))
-                if not ok:
-                    continue
-                payload = bytes(buf.raw[: int(read.value)])
-                sid = int(sender.value)
-                if not sid or not payload:
-                    continue
-                results.append((sid, payload))
-                total_bytes += len(payload)
-                self._record_peer_traffic(sid, received=len(payload))
-        if total_bytes:
-            self._download_limiter.wait(total_bytes)
-        return results
-
-    def recv_packet(self, channel: int):
-        packets = self.recv_packets(channel, 1)
-        return packets[0] if packets else None
+                except Exception:
+                    self.log.debug("Failed to discard invalid Steam P2P packet", exc_info=True)
+                return None
+            buf = ctypes.create_string_buffer(size.value)
+            read = ctypes.c_uint32(0)
+            sender = ctypes.c_uint64(0)
+            ok = self.dll.SteamAPI_ISteamNetworking_ReadP2PPacket(
+                self.networking, ctypes.cast(buf, ctypes.c_void_p), size.value,
+                ctypes.byref(read), ctypes.byref(sender), int(channel),
+            )
+            if not ok:
+                return None
+            return int(sender.value), bytes(buf.raw[: read.value])
 
 
 

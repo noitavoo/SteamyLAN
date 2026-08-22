@@ -377,82 +377,22 @@ class SettingsDialog(QDialog):
         self.effective_app_id.setObjectName("Muted")
         advanced_lay.addWidget(self.effective_app_id)
 
-        route_title = QLabel("Steam network route")
-        route_title.setObjectName("Section")
-        advanced_lay.addWidget(route_title)
-        self.relay_mode = QComboBox()
-        self.relay_mode.addItem("Automatic (Steam decides)", "automatic")
-        self.relay_mode.addItem("Prefer direct connection", "prefer_direct")
-        self.relay_mode.addItem("Force direct connection", "force_direct")
-        self.relay_mode.addItem("Prefer Steam Relay", "prefer_relay")
-        self.relay_mode.addItem("Force Steam Relay", "force_relay")
-        idx = self.relay_mode.findData(prefs.prefs.relay_mode)
-        self.relay_mode.setCurrentIndex(max(0, idx))
-        advanced_lay.addWidget(self.relay_mode)
-        route_hint = QLabel("Prefer modes bias Steam toward that route while keeping a fallback. Force direct strongly penalizes relay routes; Force Steam Relay disables direct ICE candidates.")
-        route_hint.setObjectName("Subtle")
-        route_hint.setWordWrap(True)
-        advanced_lay.addWidget(route_hint)
-
-        relay_location_title = QLabel("Steam relay location")
-        relay_location_title.setObjectName("Section")
-        advanced_lay.addWidget(relay_location_title)
-        relay_row = QHBoxLayout()
-        self.relay_location = QComboBox()
-        relay_row.addWidget(self.relay_location, 1)
-        refresh_relays = QPushButton("Refresh pings")
-        refresh_relays.setObjectName("Small")
-        refresh_relays.clicked.connect(self._refresh_relay_locations)
-        relay_row.addWidget(refresh_relays)
-        advanced_lay.addLayout(relay_row)
-        relay_hint = QLabel("Automatic lets Steam choose. Available Steam Datagram Relay locations are ordered from lowest measured ping to highest.")
-        relay_hint.setObjectName("Subtle")
-        relay_hint.setWordWrap(True)
-        advanced_lay.addWidget(relay_hint)
-        self._refresh_relay_locations()
-
         bind_title = QLabel("Local tunnel bind address")
         bind_title.setObjectName("Section")
         advanced_lay.addWidget(bind_title)
         self.bind_address = QLineEdit(prefs.prefs.bind_address)
-        self.bind_address.setPlaceholderText("127.0.0.1")
+        self.bind_address.setPlaceholderText("0.0.0.0")
         self.bind_address.setToolTip("Numeric IPv4 or IPv6 address used for local forwarded ports")
         advanced_lay.addWidget(self.bind_address)
         bind_hint = QLabel(
-            "127.0.0.1 keeps forwarded ports local to this computer. "
-            "0.0.0.0 listens on every IPv4 interface; :: listens on every IPv6 interface. "
+            "0.0.0.0 listens on every IPv4 interface (the default); :: listens on every IPv6 interface. "
+            "Use 127.0.0.1 to keep forwarded ports local to this computer. "
             "The change applies when a shared port is next opened or after reconnecting."
         )
         bind_hint.setObjectName("Subtle")
         bind_hint.setWordWrap(True)
         advanced_lay.addWidget(bind_hint)
 
-        bandwidth_title = QLabel("Bandwidth limits")
-        bandwidth_title.setObjectName("Section")
-        advanced_lay.addWidget(bandwidth_title)
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(6)
-        self.upload_limit = QSpinBox()
-        self.upload_limit.setRange(0, 1_000_000)
-        self.upload_limit.setValue(prefs.prefs.upload_limit_kbps)
-        self.upload_limit.setSuffix(" Kbit/s")
-        self.upload_limit.setSpecialValueText("Unlimited")
-        self.download_limit = QSpinBox()
-        self.download_limit.setRange(0, 1_000_000)
-        self.download_limit.setValue(prefs.prefs.download_limit_kbps)
-        self.download_limit.setSuffix(" Kbit/s")
-        self.download_limit.setSpecialValueText("Unlimited")
-        grid.addWidget(QLabel("Upload"), 0, 0)
-        grid.addWidget(self.upload_limit, 0, 1)
-        grid.addWidget(QLabel("Download"), 1, 0)
-        grid.addWidget(self.download_limit, 1, 1)
-        grid.setColumnStretch(1, 1)
-        advanced_lay.addLayout(grid)
-        bandwidth_hint = QLabel("0 means unlimited. The upload cap is also passed to Steam's native send-rate controller; both directions are enforced by SteamyLAN's transport layer.")
-        bandwidth_hint.setObjectName("Subtle")
-        bandwidth_hint.setWordWrap(True)
-        advanced_lay.addWidget(bandwidth_hint)
         self.advanced.hide()
         content.addWidget(self.advanced)
         adv_button.toggled.connect(
@@ -502,29 +442,6 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
-
-    def _refresh_relay_locations(self) -> None:
-        current = str(getattr(self.prefs.prefs, "relay_location", "automatic") or "automatic")
-        if hasattr(self, "relay_location") and self.relay_location.currentData():
-            current = str(self.relay_location.currentData())
-        self.relay_location.clear()
-        self.relay_location.addItem("Automatic (Steam chooses)", "automatic")
-        rows = []
-        if self._steam_client is not None and getattr(self._steam_client, "initialized", False):
-            try:
-                rows = list(self._steam_client.relay_locations())
-            except Exception:
-                rows = []
-        for code, ping in rows:
-            code = str(code).strip().casefold()
-            if not code:
-                continue
-            label = f"{code.upper()} · {ping} ms" if int(ping) >= 0 else f"{code.upper()} · ping unavailable"
-            self.relay_location.addItem(label, code)
-        if current != "automatic" and self.relay_location.findData(current) < 0:
-            self.relay_location.addItem(f"{current.upper()} · saved selection", current)
-        index = self.relay_location.findData(current)
-        self.relay_location.setCurrentIndex(max(0, index))
 
     def _parsed_custom_app_id(self) -> int | None:
         text = self.custom_app_id.text().strip()
@@ -580,11 +497,7 @@ class SettingsDialog(QDialog):
         self.prefs.prefs.check_updates_on_start = self.update_start.isChecked()
         self.prefs.prefs.update_mode = str(self.update_mode.currentData() or "automatic")
         self.prefs.prefs.custom_app_id = "" if parsed_app_id is None else str(parsed_app_id)
-        self.prefs.prefs.relay_mode = str(self.relay_mode.currentData() or "automatic")
-        self.prefs.prefs.relay_location = str(self.relay_location.currentData() or "automatic")
         self.prefs.prefs.bind_address = bind_address
-        self.prefs.prefs.upload_limit_kbps = int(self.upload_limit.value())
-        self.prefs.prefs.download_limit_kbps = int(self.download_limit.value())
         try:
             self.prefs.save()
         except Exception as exc:
@@ -4281,15 +4194,6 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            try:
-                self.steam.steam.configure_network(
-                    relay_mode=self.prefs.prefs.relay_mode,
-                    relay_location=self.prefs.prefs.relay_location,
-                    upload_limit_kbps=self.prefs.prefs.upload_limit_kbps,
-                    download_limit_kbps=self.prefs.prefs.download_limit_kbps,
-                )
-            except Exception:
-                self.log.exception("Could not apply networking settings")
             self.session.apply_lan_discovery_preference()
             self.session.refresh_steam_status()
             self._sync_create_visibility()

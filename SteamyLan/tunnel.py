@@ -28,6 +28,15 @@ class TunnelError(RuntimeError):
     pass
 
 
+def _recv_packet(steam, channel: int):
+    """Use one legacy P2P read at a time (with a test-double fallback)."""
+    recv = getattr(steam, "recv_packet", None)
+    if callable(recv):
+        return recv(channel)
+    packets = steam.recv_packets(channel, 1)
+    return packets[0] if packets else None
+
+
 class ControlLink:
     """Reliable authorization transport with application-level P2P health."""
 
@@ -211,54 +220,53 @@ class ControlLink:
     def _receive(self) -> None:
         while not self._stop.is_set():
             try:
-                packets = self.steam.recv_packets(self.channel, 32)
-                if not packets:
+                item = _recv_packet(self.steam, self.channel)
+                if item is None:
                     self._stop.wait(0.01)
                     continue
-                for sender, wire in packets:
-                    sender = int(sender)
-                    parsed = unpack_packet(wire)
-                    if parsed is None:
-                        continue
-                    kind, proto, stream_id, payload = parsed
-                    if proto != PROTO_NONE or stream_id:
-                        continue
-                    if kind == PT_HEARTBEAT and len(payload) == self._HEARTBEAT.size:
-                        self._send_payload(sender, PT_HEARTBEAT_ACK, payload)
+                sender, wire = int(item[0]), item[1]
+                parsed = unpack_packet(wire)
+                if parsed is None:
+                    continue
+                kind, proto, stream_id, payload = parsed
+                if proto != PROTO_NONE or stream_id:
+                    continue
+                if kind == PT_HEARTBEAT and len(payload) == self._HEARTBEAT.size:
+                    self._send_payload(sender, PT_HEARTBEAT_ACK, payload)
+                    self._mark_seen(sender)
+                    continue
+                if kind == PT_HEARTBEAT_ACK and len(payload) == self._HEARTBEAT.size:
+                    nonce = self._HEARTBEAT.unpack(payload)[0]
+                    with self._lock:
+                        sent = self._pending_heartbeats.pop((sender, nonce), None)
+                    if sent is not None:
+                        ping_ms = max(0, min(60_000, round((time.monotonic() - sent) * 1000)))
+                        self._mark_seen(sender, ping_ms)
+                    continue
+                text = payload.decode("utf-8", "replace").strip()
+                if self.role == "host":
+                    if kind == PT_AUTH_REQUEST and self.on_request:
+                        self.add_peer(sender)
                         self._mark_seen(sender)
-                        continue
-                    if kind == PT_HEARTBEAT_ACK and len(payload) == self._HEARTBEAT.size:
-                        nonce = self._HEARTBEAT.unpack(payload)[0]
-                        with self._lock:
-                            sent = self._pending_heartbeats.pop((sender, nonce), None)
-                        if sent is not None:
-                            ping_ms = max(0, min(60_000, round((time.monotonic() - sent) * 1000)))
-                            self._mark_seen(sender, ping_ms)
-                        continue
-                    text = payload.decode("utf-8", "replace").strip()
-                    if self.role == "host":
-                        if kind == PT_AUTH_REQUEST and self.on_request:
-                            self.add_peer(sender)
-                            self._mark_seen(sender)
-                            self.on_request(sender, text)
-                        elif kind == PT_DISCONNECT_ACK and self.on_disconnect_ack:
-                            self.on_disconnect_ack(sender)
-                    elif sender == self.peer_id:
-                        self._mark_seen(sender)
-                        if kind == PT_AUTH_GRANTED:
-                            self._granted.set()
-                            if self.on_granted:
-                                self.on_granted()
-                        elif kind == PT_AUTH_DENIED and self.on_denied:
-                            self.on_denied(text or "The host did not allow this connection.")
-                        elif kind == PT_ACCESS_REVOKED and self.on_revoked:
-                            self.on_revoked(text or "The host removed your access.")
-                        elif kind == PT_DISCONNECTED:
-                            self.send(self.peer_id, PT_DISCONNECT_ACK)
-                            if self.on_disconnected:
-                                self.on_disconnected(text or "The host disconnected you.")
-                        elif kind == PT_CONFIG_UPDATE and self.on_config_update:
-                            self.on_config_update(payload.decode("utf-8", "replace"))
+                        self.on_request(sender, text)
+                    elif kind == PT_DISCONNECT_ACK and self.on_disconnect_ack:
+                        self.on_disconnect_ack(sender)
+                elif sender == self.peer_id:
+                    self._mark_seen(sender)
+                    if kind == PT_AUTH_GRANTED:
+                        self._granted.set()
+                        if self.on_granted:
+                            self.on_granted()
+                    elif kind == PT_AUTH_DENIED and self.on_denied:
+                        self.on_denied(text or "The host did not allow this connection.")
+                    elif kind == PT_ACCESS_REVOKED and self.on_revoked:
+                        self.on_revoked(text or "The host removed your access.")
+                    elif kind == PT_DISCONNECTED:
+                        self.send(self.peer_id, PT_DISCONNECT_ACK)
+                        if self.on_disconnected:
+                            self.on_disconnected(text or "The host disconnected you.")
+                    elif kind == PT_CONFIG_UPDATE and self.on_config_update:
+                        self.on_config_update(payload.decode("utf-8", "replace"))
             except Exception:
                 if not self._stop.is_set():
                     self.log.exception("SteamyLAN control receive failed")
@@ -275,7 +283,7 @@ class TunnelEngine:
 
     def __init__(
         self, steam, logger, *, role: str, protocol: str, peer_id: int, channel: int,
-        target_host: str, target_port: int, bind_host: str = "127.0.0.1",
+        target_host: str, target_port: int, bind_host: str = "0.0.0.0",
         bind_port: int | None = None, on_activity: Callable[[int], None] | None = None,
     ):
         self.steam, self.log, self.role = steam, logger, role
@@ -373,18 +381,16 @@ class TunnelEngine:
     def _receive(self) -> None:
         while not self._stop.is_set():
             try:
-                packets = self.steam.recv_packets(self.channel, 64)
-                if not packets:
+                item = _recv_packet(self.steam, self.channel)
+                if item is None:
                     self._stop.wait(0.01)
                     continue
-                active = False
-                for sender, wire in packets:
-                    if int(sender) != self.peer_id: continue
-                    parsed = unpack_packet(wire)
-                    if parsed is None: continue
-                    active = True
-                    self._handle(*parsed)
-                if active and self.on_activity: self.on_activity(self.peer_id)
+                sender, wire = item
+                if int(sender) != self.peer_id: continue
+                parsed = unpack_packet(wire)
+                if parsed is None: continue
+                self._handle(*parsed)
+                if self.on_activity: self.on_activity(self.peer_id)
             except Exception:
                 if not self._stop.is_set():
                     self.log.exception("SteamyLAN tunnel receive failed")

@@ -19,13 +19,13 @@ class BindAddressTests(unittest.TestCase):
         self.assertIsNone(PreferenceStore.normalize_bind_address("localhost"))
         self.assertIsNone(PreferenceStore.normalize_bind_address("not-an-ip"))
 
-    def test_invalid_saved_bind_address_falls_back_to_loopback(self):
+    def test_invalid_saved_bind_address_falls_back_to_default_listener(self):
         with tempfile.TemporaryDirectory() as td:
             settings_path = Path(td) / "settings.json"
             settings_path.write_text(json.dumps({"bind_address": "bad address"}), encoding="utf-8")
             with mock.patch("SteamyLan.settings.user_config_dir", return_value=td):
                 store = PreferenceStore()
-            self.assertEqual(store.prefs.bind_address, "127.0.0.1")
+            self.assertEqual(store.prefs.bind_address, "0.0.0.0")
             self.assertFalse(store.prefs.lan_discovery_compatibility)
 
     def test_mapping_copy_address_is_connectable_for_wildcard_bind(self):
