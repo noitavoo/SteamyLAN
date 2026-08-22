@@ -26,6 +26,7 @@ class BindAddressTests(unittest.TestCase):
             with mock.patch("SteamyLan.settings.user_config_dir", return_value=td):
                 store = PreferenceStore()
             self.assertEqual(store.prefs.bind_address, "127.0.0.1")
+            self.assertFalse(store.prefs.lan_discovery_compatibility)
 
     def test_mapping_copy_address_is_connectable_for_wildcard_bind(self):
         ipv4 = LocalMapping("a", "Game", "TCP", 25565, 25565, "0.0.0.0")

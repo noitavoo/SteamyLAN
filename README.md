@@ -24,6 +24,20 @@ Open **Lobbies** and select a server, accept a Steam invite, or paste a SteamyLA
 
 Once connected, SteamyLAN displays the local `localhost:<port>` address to use in the game.
 
+For games whose LAN browser relies on UDP broadcasts, such as Titan Quest,
+join the lobby and click **Enable LAN discovery** on the Server page. Windows
+asks for administrator approval, then SteamyLAN remembers the feature for that
+session. Automatic activation is available as an opt-in setting.
+The elevated helper redirects broadcasts only for the exact ports in the
+active lobby to `127.0.0.1`; it does not expose those ports to the physical
+LAN, install a virtual adapter, or capture traffic outside those discovery
+ports. The helper and its packet filter stop when you disconnect. Automatic
+activation can be disabled in Settings.
+
+Some anti-cheat or endpoint-security products may block packet-diversion
+drivers. If that happens, SteamyLAN leaves the normal localhost tunnels active
+and reports that LAN discovery compatibility is unavailable.
+
 ## Notes
 SteamyLAN uses the Spacewar appid to function.
 
@@ -36,6 +50,10 @@ The **Server** page shows each member's live P2P state. A connection is ready wh
 * Steam running and signed in
 * Official 64-bit `steam_api64.dll`
 * Dependencies from `requirements.txt`
+
+The Windows release bundles the official x64 WinDivert 2.2.2 driver for
+broadcast-only LAN discovery compatibility. Its license and attribution are
+included under `third_party/windivert`.
 
 ## Run From Source
 

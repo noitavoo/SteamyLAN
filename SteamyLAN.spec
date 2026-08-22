@@ -4,8 +4,17 @@
 a = Analysis(
     ['run.py'],
     pathex=[],
-    binaries=[('C:/Users/Nick/source/repos/SteamyLAN/SteamyLAN-main/steam_api64.dll', '.')],
-    datas=[('SteamyLan/steamylan.ico', 'SteamyLan'), ('SteamyLan/steamylan.png', 'SteamyLan')],
+    binaries=[
+        ('steam_api64.dll', '.'),
+        ('third_party/windivert/x64/WinDivert.dll', '.'),
+    ],
+    datas=[
+        ('SteamyLan/steamylan.ico', 'SteamyLan'),
+        ('SteamyLan/steamylan.png', 'SteamyLan'),
+        ('third_party/windivert/LICENSE.txt', 'third_party/windivert'),
+        ('third_party/windivert/NOTICE.md', 'third_party/windivert'),
+        ('third_party/windivert/x64/WinDivert64.sys', '.'),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

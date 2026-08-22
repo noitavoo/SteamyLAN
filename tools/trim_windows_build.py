@@ -107,6 +107,8 @@ def _essential_files(build_dir: Path, executable_name: str) -> set[Path]:
     exact_names = {
         executable_name.casefold(),
         "steam_api64.dll",
+        "windivert.dll",
+        "windivert64.sys",
         "steam_appid.txt",
     }
 
@@ -129,6 +131,10 @@ def _essential_files(build_dir: Path, executable_name: str) -> set[Path]:
 
 
         if "steamylan" in rel_parts[:-1]:
+            keep.add(rel)
+            continue
+
+        if "windivert" in rel_parts[:-1]:
             keep.add(rel)
             continue
 

@@ -20,6 +20,8 @@ if not defined DLL_SOURCE if defined STEAMWORKS_SDK if exist "%STEAMWORKS_SDK%\r
 if not defined DLL_SOURCE if defined STEAMWORKS_SDK if exist "%STEAMWORKS_SDK%\sdk\redistributable_bin\win64\steam_api64.dll" set "DLL_SOURCE=%STEAMWORKS_SDK%\sdk\redistributable_bin\win64\steam_api64.dll"
 
 if not defined DLL_SOURCE goto :dll_missing
+if not exist "third_party\windivert\x64\WinDivert.dll" goto :windivert_missing
+if not exist "third_party\windivert\x64\WinDivert64.sys" goto :windivert_missing
 
 echo Steam DLL: "%DLL_SOURCE%"
 echo.
@@ -37,10 +39,14 @@ echo [1/3] Building SteamyLAN...
 rmdir /s /q build 2>nul
 rmdir /s /q dist 2>nul
 
-python -m PyInstaller --noconfirm --clean --windowed --onedir --name SteamyLAN --icon SteamyLan\steamylan.ico --add-data="SteamyLan\steamylan.ico:SteamyLan" --add-data="SteamyLan\steamylan.png:SteamyLan" --add-binary="%DLL_SOURCE%:." run.py
+python -m PyInstaller --noconfirm --clean --windowed --onedir --name SteamyLAN --icon SteamyLan\steamylan.ico --add-data="SteamyLan\steamylan.ico:SteamyLan" --add-data="SteamyLan\steamylan.png:SteamyLan" --add-data="third_party\windivert\LICENSE.txt:third_party\windivert" --add-data="third_party\windivert\NOTICE.md:third_party\windivert" --add-data="third_party\windivert\x64\WinDivert64.sys:." --add-binary="%DLL_SOURCE%:." --add-binary="third_party\windivert\x64\WinDivert.dll:." run.py
 if errorlevel 1 goto :build_failed
 
 if not exist "dist\SteamyLAN\SteamyLAN.exe" goto :build_missing
+copy /Y "third_party\windivert\x64\WinDivert.dll" "dist\SteamyLAN\WinDivert.dll" >nul
+if errorlevel 1 goto :windivert_copy_failed
+copy /Y "third_party\windivert\x64\WinDivert64.sys" "dist\SteamyLAN\WinDivert64.sys" >nul
+if errorlevel 1 goto :windivert_copy_failed
 
 python -m PyInstaller --noconfirm --clean --onefile --windowed --name SteamyLANUpdate tools\update_helper.py
 if errorlevel 1 goto :updater_build_failed
@@ -69,6 +75,11 @@ if errorlevel 1 goto :dll_copy_failed
 copy /Y "dist\SteamyLANUpdate.exe" "dist\SteamyLAN_trimmed\SteamyLANUpdate.exe" >nul
 if errorlevel 1 goto :updater_copy_failed
 
+copy /Y "third_party\windivert\x64\WinDivert.dll" "dist\SteamyLAN_trimmed\WinDivert.dll" >nul
+if errorlevel 1 goto :windivert_copy_failed
+copy /Y "third_party\windivert\x64\WinDivert64.sys" "dist\SteamyLAN_trimmed\WinDivert64.sys" >nul
+if errorlevel 1 goto :windivert_copy_failed
+
 copy /Y "%DLL_SOURCE%" "dist\steam_api64.dll" >nul
 if errorlevel 1 goto :dll_copy_failed
 
@@ -95,6 +106,14 @@ echo   %~dp0sdk\redistributable_bin\win64\steam_api64.dll
 echo   %~dp0steamworks_sdk\sdk\redistributable_bin\win64\steam_api64.dll
 echo.
 echo Or set STEAM_API64_DLL to its full path before running this script.
+echo Nothing was built.
+pause
+exit /b 1
+
+:windivert_missing
+echo.
+echo ERROR: The official WinDivert x64 runtime is missing.
+echo Expected third_party\windivert\x64\WinDivert.dll and WinDivert64.sys.
 echo Nothing was built.
 pause
 exit /b 1
@@ -146,6 +165,12 @@ exit /b 1
 :updater_copy_failed
 echo.
 echo ERROR: Failed to copy SteamyLANUpdate.exe into the application build.
+pause
+exit /b 1
+
+:windivert_copy_failed
+echo.
+echo ERROR: Failed to copy the WinDivert runtime into the application build.
 pause
 exit /b 1
 

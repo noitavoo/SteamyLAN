@@ -309,6 +309,8 @@ class AppSnapshot:
     host_name: str = ""
     service_name: str = ""
     mappings: tuple[LocalMapping, ...] = ()
+    discovery_ports: tuple[int, ...] = ()
+    discovery_requested: bool = False
     peers: tuple[PeerState, ...] = ()
     members: tuple[PeerState, ...] = ()
     join_code: str = ""

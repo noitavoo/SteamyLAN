@@ -13,6 +13,7 @@ on:
       - 'requirements-build.txt'
       - 'pyproject.toml'
       - 'steam_api64.dll'
+      - 'third_party/windivert/**'
   workflow_dispatch: {}
 
 permissions:
@@ -136,12 +137,22 @@ jobs:
             --icon "SteamyLan\steamylan.ico" `
             --add-data "SteamyLan\steamylan.ico:SteamyLan" `
             --add-data "SteamyLan\steamylan.png:SteamyLan" `
+            --add-data "third_party\windivert\LICENSE.txt:third_party\windivert" `
+            --add-data "third_party\windivert\NOTICE.md:third_party\windivert" `
+            --add-data "third_party\windivert\x64\WinDivert64.sys:." `
             --add-binary "steam_api64.dll:." `
+            --add-binary "third_party\windivert\x64\WinDivert.dll:." `
             run.py
 
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path "dist\SteamyLAN\SteamyLAN.exe")) {
             throw "PyInstaller completed without creating dist\SteamyLAN\SteamyLAN.exe"
+          }
+          Copy-Item "third_party\windivert\x64\WinDivert.dll" "dist\SteamyLAN\WinDivert.dll" -Force
+          Copy-Item "third_party\windivert\x64\WinDivert64.sys" "dist\SteamyLAN\WinDivert64.sys" -Force
+          if (-not (Test-Path "dist\SteamyLAN\WinDivert.dll") -or
+              -not (Test-Path "dist\SteamyLAN\WinDivert64.sys")) {
+            throw "PyInstaller completed without the WinDivert runtime"
           }
 
           python -m PyInstaller `
@@ -179,6 +190,10 @@ jobs:
           }
           if (-not (Test-Path "release\SteamyLAN\SteamyLANUpdate.exe")) {
             throw "Release folder is missing SteamyLANUpdate.exe"
+          }
+          if (-not (Test-Path "release\SteamyLAN\WinDivert.dll") -or
+              -not (Test-Path "release\SteamyLAN\WinDivert64.sys")) {
+            throw "Release folder is missing the WinDivert runtime"
           }
           if (-not (Test-Path $asset)) {
             throw "Release ZIP was not created: $asset"
