@@ -77,4 +77,6 @@ bc1qsp9tuke9ftw7xlr9nsndhhyl5fhu9q8a5mfvzt
 
 SteamyLAN is an independent project and is not affiliated with or endorsed by Valve Corporation or Steam.
 
+AI was used to accelerate the development of SteamyLAN.
+
 © 2026 noitavoo. All rights reserved.
