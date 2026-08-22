@@ -63,7 +63,7 @@ Build output is created under `dist`, with `steam_api64.dll` copied into the req
 python -m unittest discover -s tests -v
 ```
 
-## Donate
+## Donate ❤
 
 If you find SteamyLAN useful and want to support development, Bitcoin donations are appreciated.
 
