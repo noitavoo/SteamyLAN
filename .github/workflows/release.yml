@@ -78,7 +78,8 @@ jobs:
 
       - name: Run regression tests
         shell: pwsh
-        run: python -m unittest discover -s tests -v
+        run: |
+          python -m unittest discover -s tests -v
 
       - name: Resolve and stamp release version
         id: version
@@ -87,6 +88,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $threePartTag = '^v\d+\.\d+\.\d+$'
+
           $currentTag = git tag --points-at "$env:GITHUB_SHA" |
             Where-Object { $_ -match $threePartTag } |
             Select-Object -First 1
@@ -100,16 +102,23 @@ jobs:
               gh release list --limit 100 --json tagName --jq '.[].tagName' |
                 Where-Object { $_ -match $threePartTag }
             )
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            # This explicitly starts a new sequence. Legacy tags are ignored
-            # until the new v1.0.0 baseline has been published successfully.
+
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+
+            # Start the current release sequence from v1.0.0.
+            # Legacy tags are ignored until v1.0.0 exists.
             gh release view 'v1.0.0' --json tagName *> $null
             $resetPublished = $LASTEXITCODE -eq 0
+
             $previousTag = if ($resetPublished) {
               $releaseTags | Select-Object -First 1
-            } else {
+            }
+            else {
               $null
             }
+
             if ($previousTag) {
               $version = python tools/stamp_build_version.py --previous-version "$previousTag"
             }
@@ -117,16 +126,37 @@ jobs:
               $version = python tools/stamp_build_version.py
             }
           }
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
           $version = $version.Trim()
-          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "tag=v$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          "version=$version" |
+            Out-File `
+              -FilePath $env:GITHUB_OUTPUT `
+              -Encoding utf8 `
+              -Append
+
+          "tag=v$version" |
+            Out-File `
+              -FilePath $env:GITHUB_OUTPUT `
+              -Encoding utf8 `
+              -Append
+
           Write-Host "Building SteamyLAN $version"
 
       - name: Build Windows application
         shell: pwsh
         run: |
-          Remove-Item -Recurse -Force build, dist, release -ErrorAction SilentlyContinue
+          Remove-Item `
+            -Recurse `
+            -Force `
+            build, dist, release `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "Building SteamyLAN..."
 
           python -m PyInstaller `
             --noconfirm `
@@ -144,16 +174,33 @@ jobs:
             --add-binary "third_party\windivert\x64\WinDivert.dll:." `
             run.py
 
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
           if (-not (Test-Path "dist\SteamyLAN\SteamyLAN.exe")) {
             throw "PyInstaller completed without creating dist\SteamyLAN\SteamyLAN.exe"
           }
-          Copy-Item "third_party\windivert\x64\WinDivert.dll" "dist\SteamyLAN\WinDivert.dll" -Force
-          Copy-Item "third_party\windivert\x64\WinDivert64.sys" "dist\SteamyLAN\WinDivert64.sys" -Force
-          if (-not (Test-Path "dist\SteamyLAN\WinDivert.dll") -or
-              -not (Test-Path "dist\SteamyLAN\WinDivert64.sys")) {
+
+          # Keep WinDivert runtime files directly beside SteamyLAN.exe.
+          Copy-Item `
+            "third_party\windivert\x64\WinDivert.dll" `
+            "dist\SteamyLAN\WinDivert.dll" `
+            -Force
+
+          Copy-Item `
+            "third_party\windivert\x64\WinDivert64.sys" `
+            "dist\SteamyLAN\WinDivert64.sys" `
+            -Force
+
+          if (
+            -not (Test-Path "dist\SteamyLAN\WinDivert.dll") -or
+            -not (Test-Path "dist\SteamyLAN\WinDivert64.sys")
+          ) {
             throw "PyInstaller completed without the WinDivert runtime"
           }
+
+          Write-Host "Building SteamyLAN updater..."
 
           python -m PyInstaller `
             --noconfirm `
@@ -163,41 +210,80 @@ jobs:
             --name SteamyLANUpdate `
             tools\update_helper.py
 
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
           if (-not (Test-Path "dist\SteamyLANUpdate.exe")) {
             throw "PyInstaller did not create SteamyLANUpdate.exe"
           }
-          Copy-Item "dist\SteamyLANUpdate.exe" "dist\SteamyLAN\SteamyLANUpdate.exe" -Force
 
-          # Keep the official Steam DLL directly beside the EXE. SteamyLAN's
-          # runtime loader intentionally checks this location first.
-          Copy-Item "steam_api64.dll" "dist\SteamyLAN\steam_api64.dll" -Force
+          Copy-Item `
+            "dist\SteamyLANUpdate.exe" `
+            "dist\SteamyLAN\SteamyLANUpdate.exe" `
+            -Force
 
-      - name: Trim runtime and create versioned ZIP
+          # Keep the official Steam DLL directly beside the EXE.
+          Copy-Item `
+            "steam_api64.dll" `
+            "dist\SteamyLAN\steam_api64.dll" `
+            -Force
+
+          Write-Host "Build completed."
+
+          Get-ChildItem "dist\SteamyLAN" |
+            Format-Table Name, Length
+
+      - name: Create versioned ZIP
         shell: pwsh
         run: |
           $version = "${{ steps.version.outputs.version }}"
           $asset = "release\SteamyLAN_v$version.zip"
 
-          python tools/package_release.py --build "dist/SteamyLAN" --output-root "release" --version "$version"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # No trimming or package_release.py processing.
+          # Package the complete PyInstaller output exactly as built.
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path "release" |
+            Out-Null
 
-          if (-not (Test-Path "release\SteamyLAN\SteamyLAN.exe")) {
-            throw "Release folder is missing SteamyLAN.exe"
+          if (-not (Test-Path "dist\SteamyLAN\SteamyLAN.exe")) {
+            throw "Build folder is missing SteamyLAN.exe"
           }
-          if (-not (Test-Path "release\SteamyLAN\steam_api64.dll")) {
-            throw "Release folder is missing steam_api64.dll"
+
+          if (-not (Test-Path "dist\SteamyLAN\steam_api64.dll")) {
+            throw "Build folder is missing steam_api64.dll"
           }
-          if (-not (Test-Path "release\SteamyLAN\SteamyLANUpdate.exe")) {
-            throw "Release folder is missing SteamyLANUpdate.exe"
+
+          if (-not (Test-Path "dist\SteamyLAN\SteamyLANUpdate.exe")) {
+            throw "Build folder is missing SteamyLANUpdate.exe"
           }
-          if (-not (Test-Path "release\SteamyLAN\WinDivert.dll") -or
-              -not (Test-Path "release\SteamyLAN\WinDivert64.sys")) {
-            throw "Release folder is missing the WinDivert runtime"
+
+          if (
+            -not (Test-Path "dist\SteamyLAN\WinDivert.dll") -or
+            -not (Test-Path "dist\SteamyLAN\WinDivert64.sys")
+          ) {
+            throw "Build folder is missing the WinDivert runtime"
           }
+
+          Write-Host "Creating $asset from the complete PyInstaller build..."
+
+          Compress-Archive `
+            -Path "dist\SteamyLAN\*" `
+            -DestinationPath $asset `
+            -CompressionLevel Optimal `
+            -Force
+
           if (-not (Test-Path $asset)) {
             throw "Release ZIP was not created: $asset"
           }
+
+          $zipInfo = Get-Item $asset
+
+          Write-Host "Created release archive:"
+          Write-Host "  $($zipInfo.FullName)"
+          Write-Host "  Size: $($zipInfo.Length) bytes"
 
       - name: Publish GitHub Release
         shell: pwsh
@@ -209,21 +295,57 @@ jobs:
           $title = "SteamyLAN $env:RELEASE_VERSION"
           $asset = "release\SteamyLAN_v$env:RELEASE_VERSION.zip"
           $checksum = "$asset.sha256"
-          (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower() + "  " + (Split-Path $asset -Leaf) | Set-Content $checksum -NoNewline
+
+          if (-not (Test-Path $asset)) {
+            throw "Release asset does not exist: $asset"
+          }
+
+          $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
+          $fileName = Split-Path $asset -Leaf
+
+          "$hash  $fileName" |
+            Set-Content `
+              $checksum `
+              -NoNewline
+
+          Write-Host "Release asset:"
+          Write-Host "  $asset"
+          Write-Host "SHA256:"
+          Write-Host "  $hash"
 
           # Re-running the same Actions run keeps the same run number/tag.
-          # Replace the asset instead of creating a duplicate release.
+          # Replace the existing assets instead of creating duplicates.
           gh release view "$env:RELEASE_TAG" *> $null
+
           if ($LASTEXITCODE -eq 0) {
-            Write-Host "Release $env:RELEASE_TAG already exists; replacing SteamyLAN_v$env:RELEASE_VERSION.zip."
-            gh release upload "$env:RELEASE_TAG" "$asset" "$checksum" --clobber
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host "Release $env:RELEASE_TAG already exists."
+            Write-Host "Replacing existing release assets."
+
+            gh release upload `
+              "$env:RELEASE_TAG" `
+              "$asset" `
+              "$checksum" `
+              --clobber
+
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
           }
           else {
-            gh release create "$env:RELEASE_TAG" "$asset" "$checksum" `
+            Write-Host "Creating release $env:RELEASE_TAG."
+
+            gh release create `
+              "$env:RELEASE_TAG" `
+              "$asset" `
+              "$checksum" `
               --target "$env:GITHUB_SHA" `
               --title "$title" `
               --generate-notes `
               --latest
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
           }
+
+          Write-Host "Published SteamyLAN $env:RELEASE_VERSION successfully."
