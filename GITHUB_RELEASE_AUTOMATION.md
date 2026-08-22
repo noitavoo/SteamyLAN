@@ -33,6 +33,8 @@ SteamyLAN_v1.0.0.zip
 └── SteamyLAN/
     ├── SteamyLAN.exe
     ├── steam_api64.dll
+    ├── WinDivert.dll
+    ├── WinDivert64.sys
     └── _internal/
         └── ...runtime dependencies...
 ```
@@ -42,6 +44,11 @@ Source code, tests, Git metadata, caches, debug symbol files (`.pdb`), import li
 ## Steamworks DLL: one-time setup if the DLL is not tracked
 
 The Windows build needs the official 64-bit `steam_api64.dll`.
+
+LAN discovery compatibility also bundles the official WinDivert 2.2.2-A x64
+runtime from `third_party/windivert`. The build verifies those files exist and
+the application pins their SHA-256 hashes before elevation. Keep the upstream
+`LICENSE.txt` and `NOTICE.md` in every redistribution.
 
 The workflow first uses `steam_api64.dll` if it is already tracked in the repository. The current `.gitignore` ignores new copies of this DLL, so if your repository does not already track it, use a repository secret instead.
 

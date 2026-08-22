@@ -104,6 +104,9 @@ def main() -> int:
         raise SystemExit(f"Missing Steamworks runtime DLL: {build_dir / 'steam_api64.dll'}")
     if not (build_dir / "SteamyLANUpdate.exe").is_file():
         raise SystemExit(f"Missing updater helper: {build_dir / 'SteamyLANUpdate.exe'}")
+    for filename in ("WinDivert.dll", "WinDivert64.sys"):
+        if not (build_dir / filename).is_file():
+            raise SystemExit(f"Missing LAN discovery runtime: {build_dir / filename}")
 
     output_root.mkdir(parents=True, exist_ok=True)
     copy_runtime(build_dir, runtime_dir)
@@ -114,6 +117,9 @@ def main() -> int:
         raise SystemExit("Packaging removed steam_api64.dll unexpectedly")
     if not (runtime_dir / "SteamyLANUpdate.exe").is_file():
         raise SystemExit("Packaging removed SteamyLANUpdate.exe unexpectedly")
+    for filename in ("WinDivert.dll", "WinDivert64.sys"):
+        if not (runtime_dir / filename).is_file():
+            raise SystemExit(f"Packaging removed {filename} unexpectedly")
 
     zip_runtime(runtime_dir, zip_path)
     print(f"Release folder: {runtime_dir}")

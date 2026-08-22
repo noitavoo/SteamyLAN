@@ -6,6 +6,9 @@ def main() -> int:
     if not ((3, 14, 7) <= sys.version_info[:3] < (3, 15, 0)):
         print("SteamyLAN requires Python 3.14.7 or newer within the 3.14 series.")
         return 2
+    if len(sys.argv) > 1 and sys.argv[1] == "--broadcast-helper":
+        from SteamyLan.broadcast_helper import main as helper_main
+        return int(helper_main(sys.argv[2:]))
     try:
         from SteamyLan.app import main as app_main
     except ModuleNotFoundError as exc:

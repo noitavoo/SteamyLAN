@@ -43,6 +43,7 @@ from .constants import (
     VISIBILITY_PUBLIC,
 )
 from .chat import ChatError, EncryptedLobbyChat
+from .broadcast_redirect import BroadcastRedirectorController, compatible_mapping_ports
 from .invite_broker import InviteBroker
 from .detector import ServiceDetector
 from .models import (
@@ -627,6 +628,7 @@ class SessionManager(QObject):
     _codeInviteGranted = Signal(object)
     _codeInviteDenied = Signal(str)
     _disconnectAck = Signal(object)
+    _broadcastStatus = Signal(str, str)
 
     def __init__(
         self,
@@ -671,6 +673,11 @@ class SessionManager(QObject):
         self._membership_guard = LobbyMembershipGuard(10.0)
         self._peer_health: dict[int, tuple[int, str, float]] = {}
         self._join_attempt_id = 0
+        self._broadcast_notice_kind = ""
+        self._broadcast_redirector = BroadcastRedirectorController(
+            logger,
+            on_status=lambda kind, message: self._broadcastStatus.emit(str(kind), str(message)),
+        )
 
         self._lobbyCreated.connect(self._finish_share)
         self._joinCallResult.connect(self._on_join_call)
@@ -689,6 +696,7 @@ class SessionManager(QObject):
         self._codeInviteGranted.connect(self._on_code_invite_granted)
         self._codeInviteDenied.connect(self._on_code_invite_denied)
         self._disconnectAck.connect(self._on_disconnect_ack)
+        self._broadcastStatus.connect(self._on_broadcast_status)
         self.service.lobbyEntered.connect(self._on_lobby_entered)
         self.service.lobbyInviteReceived.connect(self._on_lobby_invite_for_code)
         self.service.networkingSessionRequested.connect(self._on_networking_request)
@@ -1885,6 +1893,7 @@ class SessionManager(QObject):
                 else "Connected. No shared ports are open on this computer."
             )
             self._set(status=status)
+            self._sync_broadcast_redirector()
             if self._chat is None:
                 self._start_client_chat()
             return
@@ -1921,7 +1930,13 @@ class SessionManager(QObject):
             if mappings
             else "Connected. Choose Open locally beside any shared port when you need it."
         )
-        self._set(mode="connected", status=status, mappings=tuple(mappings))
+        self._set(
+            mode="connected",
+            status=status,
+            mappings=tuple(mappings),
+            discovery_requested=bool(self.prefs.prefs.lan_discovery_compatibility),
+        )
+        self._sync_broadcast_redirector()
         self._start_client_chat()
         self.refresh_steam_status()
 
@@ -2045,6 +2060,7 @@ class SessionManager(QObject):
         mappings = tuple(list(self._snapshot.mappings) + [mapping])
         status = f"{self._snapshot.service_name} is ready." if mappings else self._snapshot.status
         self._set(status=status, mappings=mappings)
+        self._sync_broadcast_redirector()
 
     def revoke_client_service(self, service_id: str) -> None:
         engine = self._client_engines.pop(service_id, None)
@@ -2060,6 +2076,7 @@ class SessionManager(QObject):
             else "Connected. No shared ports are open on this computer."
         )
         self._set(status=status, mappings=mappings)
+        self._sync_broadcast_redirector()
 
     def remap_client_service(self, service_id: str, local_port: int = 0, bind_host: str | None = None) -> None:
         """Move one local listener while keeping the Steam session alive."""
@@ -2106,6 +2123,7 @@ class SessionManager(QObject):
             self.log.exception("Old remapped tunnel cleanup failed")
         mappings = tuple(mapping if item.service_id == service_id else item for item in self._snapshot.mappings)
         self._set(status=f"{self._snapshot.service_name} is ready.", mappings=mappings)
+        self._sync_broadcast_redirector()
 
     @Slot(str)
     def _on_auth_denied(self, text: str) -> None:
@@ -2196,6 +2214,7 @@ class SessionManager(QObject):
                 status=(f"{self._snapshot.service_name} is ready." if preserved_mappings
                         else "Connected. No shared ports are open on this computer."),
             )
+            self._sync_broadcast_redirector()
             return
 
         self._config = updated
@@ -2214,6 +2233,53 @@ class SessionManager(QObject):
             service_name=self._display_service_name(updated.services),
             mappings=tuple(mappings),
         )
+        self._sync_broadcast_redirector()
+
+    def _sync_broadcast_redirector(self) -> None:
+        ports: tuple[int, ...] = ()
+        if self._snapshot.discovery_requested and self._snapshot.mode == "connected":
+            ports = compatible_mapping_ports(self._snapshot.mappings)
+        if not ports and self._snapshot.discovery_ports:
+            self._set(discovery_ports=())
+        self._broadcast_redirector.update(ports)
+
+    def enable_lan_discovery(self) -> None:
+        if self._snapshot.mode != "connected":
+            self.error.emit("Connect to a lobby first.")
+            return
+        if not compatible_mapping_ports(self._snapshot.mappings):
+            self.notice.emit(
+                "LAN discovery needs an IPv4 UDP mapping on the host's original port. "
+                "Open or remap that UDP port first."
+            )
+            return
+        self._set(discovery_requested=True)
+        self._sync_broadcast_redirector()
+
+    def apply_lan_discovery_preference(self) -> None:
+        if self._snapshot.mode != "connected":
+            return
+        self._set(discovery_requested=bool(self.prefs.prefs.lan_discovery_compatibility))
+        self._sync_broadcast_redirector()
+
+    @Slot(str, str)
+    def _on_broadcast_status(self, kind: str, message: str) -> None:
+        if self._snapshot.mode != "connected":
+            return
+        if kind == "ready":
+            ports = self._broadcast_redirector.ready_ports
+            self._set(discovery_ports=ports)
+            if self._broadcast_notice_kind != "ready":
+                self._broadcast_notice_kind = "ready"
+                self.notice.emit("LAN discovery compatibility is active. Refresh the game's LAN server list.")
+        elif kind in {"inactive", "error"}:
+            self._set(discovery_ports=())
+            if kind == "error" and self._broadcast_notice_kind != "error":
+                self._broadcast_notice_kind = "error"
+                self.notice.emit(
+                    f"LAN discovery compatibility is unavailable: {message} "
+                    "Direct-connect games still work normally. Reconnect to try LAN discovery again."
+                )
 
     @Slot(object)
     def _on_peer_activity(self, steam_id) -> None:
@@ -2465,6 +2531,16 @@ class SessionManager(QObject):
 
     def stop(self) -> None:
         old = self._snapshot
+        self._broadcast_redirector.detach()
+        self._broadcast_redirector.stop()
+        # A UAC dialog can outlive the bounded shutdown wait. Use a fresh
+        # controller for the next lobby so a late response from an abandoned
+        # helper can never affect the new session.
+        self._broadcast_redirector = BroadcastRedirectorController(
+            self.log,
+            on_status=lambda kind, message: self._broadcastStatus.emit(str(kind), str(message)),
+        )
+        self._broadcast_notice_kind = ""
         self._member_timer.stop()
         self._pending_share = None
         self._joining_host = None

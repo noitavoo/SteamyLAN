@@ -302,6 +302,13 @@ class SettingsDialog(QDialog):
         self.auto_ports.setChecked(prefs.prefs.auto_accept_ports)
         add_setting_group(self.auto_ports, "When disabled, choose each shared connection from the Server panel.")
 
+        self.lan_discovery = QCheckBox("Automatically enable broadcast-only LAN compatibility")
+        self.lan_discovery.setChecked(prefs.prefs.lan_discovery_compatibility)
+        add_setting_group(
+            self.lan_discovery,
+            "When a joined game has a compatible UDP mapping, SteamyLAN asks for Windows permission automatically. Leave this off to use the one-click action on the Server page only when a game needs it. The helper does not open or expose a game port.",
+        )
+
         self.notifications = QCheckBox("Show small Windows notifications")
         self.notifications.setChecked(prefs.prefs.notifications)
         add_setting_group(self.notifications)
@@ -567,6 +574,7 @@ class SettingsDialog(QDialog):
         self.prefs.prefs.keep_in_tray = self.tray.isChecked()
         self.prefs.prefs.auto_allow_friends = self.auto.isChecked()
         self.prefs.prefs.auto_accept_ports = self.auto_ports.isChecked()
+        self.prefs.prefs.lan_discovery_compatibility = self.lan_discovery.isChecked()
         self.prefs.prefs.notifications = self.notifications.isChecked()
         self.prefs.prefs.show_steam_status = self.steam_status.isChecked()
         self.prefs.prefs.check_updates_on_start = self.update_start.isChecked()
@@ -3861,6 +3869,22 @@ class MainWindow(QMainWindow):
             close_all.setToolTip("Stop all local listeners without leaving the lobby")
             close_all.clicked.connect(self._revoke_all_remote_services)
             ports_header.addWidget(close_all)
+            compatible_discovery = any(
+                mapping.protocol.upper() == "UDP"
+                and int(mapping.local_port) == int(mapping.remote_port)
+                and mapping.bind_host in {"127.0.0.1", "0.0.0.0"}
+                for mapping in snap.mappings
+            )
+            if compatible_discovery and not snap.discovery_requested:
+                enable_discovery = QPushButton("Enable LAN discovery")
+                enable_discovery.setObjectName("SmallPrimary")
+                enable_discovery.setToolTip("Safely redirect this lobby's UDP discovery broadcasts to localhost")
+                enable_discovery.clicked.connect(self.session.enable_lan_discovery)
+                ports_header.addWidget(enable_discovery)
+            elif snap.discovery_requested and not snap.discovery_ports:
+                starting_discovery = QLabel("LAN discovery starting…")
+                starting_discovery.setObjectName("Muted")
+                ports_header.addWidget(starting_discovery)
         pl.addLayout(ports_header)
         mappings = {m.service_id: m for m in snap.mappings}
         for spec in config.services:
@@ -3890,6 +3914,11 @@ class MainWindow(QMainWindow):
                         )
                         local.setToolTip(f"Tunnel listens on {bound}; this is the local address to paste into the game.")
                     rl.addWidget(local)
+                    if int(mapping.remote_port) in snap.discovery_ports and mapping.protocol.upper() == "UDP":
+                        discovery = QLabel("LAN discovery active")
+                        discovery.setObjectName("PortChip")
+                        discovery.setToolTip("Only broadcasts for this UDP port are redirected to localhost")
+                        rl.addWidget(discovery)
                     copy_ip = QPushButton("Copy address")
                     copy_ip.setObjectName("SmallPrimary")
                     copy_ip.clicked.connect(
@@ -3913,7 +3942,14 @@ class MainWindow(QMainWindow):
                     rl.addWidget(accept)
             pl.addWidget(row)
         if snap.mode == "connected" and snap.mappings:
-            address_hint = QLabel("Copy the local address beside the port your game expects, then paste it into the game's direct-connect field.")
+            if snap.discovery_ports:
+                hint_text = (
+                    "Refresh the game's normal LAN browser; discovery broadcasts for the marked UDP ports are redirected safely to localhost. "
+                    "You can still copy an address for games that support direct connect."
+                )
+            else:
+                hint_text = "Copy the local address beside the port your game expects, then paste it into the game's direct-connect field."
+            address_hint = QLabel(hint_text)
             address_hint.setObjectName("Subtle")
             address_hint.setWordWrap(True)
             pl.addWidget(address_hint)
@@ -4254,6 +4290,7 @@ class MainWindow(QMainWindow):
                 )
             except Exception:
                 self.log.exception("Could not apply networking settings")
+            self.session.apply_lan_discovery_preference()
             self.session.refresh_steam_status()
             self._sync_create_visibility()
             self._share_dirty = True

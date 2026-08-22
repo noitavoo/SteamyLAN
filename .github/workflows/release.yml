@@ -13,6 +13,7 @@ on:
       - 'requirements-build.txt'
       - 'pyproject.toml'
       - 'steam_api64.dll'
+      - 'third_party/windivert/**'
   workflow_dispatch: {}
 
 permissions:
@@ -24,7 +25,7 @@ concurrency:
 
 jobs:
   release:
-    # Push events are limited to program/runtime changes on main.
+    # Push events are already limited to program/runtime changes on main.
     # workflow_dispatch is kept as a manual recovery/rebuild option.
     runs-on: windows-latest
 
@@ -56,11 +57,7 @@ jobs:
 
           if (-not [string]::IsNullOrWhiteSpace($env:STEAM_API64_DLL_B64)) {
             $bytes = [Convert]::FromBase64String($env:STEAM_API64_DLL_B64)
-            [IO.File]::WriteAllBytes(
-              (Join-Path $PWD "steam_api64.dll"),
-              $bytes
-            )
-
+            [IO.File]::WriteAllBytes((Join-Path $PWD "steam_api64.dll"), $bytes)
             Write-Host "Restored steam_api64.dll from STEAM_API64_DLL_B64."
             exit 0
           }
@@ -98,16 +95,11 @@ jobs:
 
           if ($currentTag) {
             Write-Host "Reusing $currentTag because this commit already has a release."
-
-            $version = python tools/stamp_build_version.py `
-              --reuse-version "$currentTag"
+            $version = python tools/stamp_build_version.py --reuse-version "$currentTag"
           }
           else {
             $releaseTags = @(
-              gh release list `
-                --limit 100 `
-                --json tagName `
-                --jq '.[].tagName' |
+              gh release list --limit 100 --json tagName --jq '.[].tagName' |
                 Where-Object { $_ -match $threePartTag }
             )
 
@@ -118,7 +110,6 @@ jobs:
             # Start the current release sequence from v1.0.0.
             # Legacy tags are ignored until v1.0.0 exists.
             gh release view 'v1.0.0' --json tagName *> $null
-
             $resetPublished = $LASTEXITCODE -eq 0
 
             $previousTag = if ($resetPublished) {
@@ -129,8 +120,7 @@ jobs:
             }
 
             if ($previousTag) {
-              $version = python tools/stamp_build_version.py `
-                --previous-version "$previousTag"
+              $version = python tools/stamp_build_version.py --previous-version "$previousTag"
             }
             else {
               $version = python tools/stamp_build_version.py
@@ -177,7 +167,11 @@ jobs:
             --icon "SteamyLan\steamylan.ico" `
             --add-data "SteamyLan\steamylan.ico:SteamyLan" `
             --add-data "SteamyLan\steamylan.png:SteamyLan" `
+            --add-data "third_party\windivert\LICENSE.txt:third_party\windivert" `
+            --add-data "third_party\windivert\NOTICE.md:third_party\windivert" `
+            --add-data "third_party\windivert\x64\WinDivert64.sys:." `
             --add-binary "steam_api64.dll:." `
+            --add-binary "third_party\windivert\x64\WinDivert.dll:." `
             run.py
 
           if ($LASTEXITCODE -ne 0) {
@@ -186,6 +180,24 @@ jobs:
 
           if (-not (Test-Path "dist\SteamyLAN\SteamyLAN.exe")) {
             throw "PyInstaller completed without creating dist\SteamyLAN\SteamyLAN.exe"
+          }
+
+          # Keep WinDivert runtime files directly beside SteamyLAN.exe.
+          Copy-Item `
+            "third_party\windivert\x64\WinDivert.dll" `
+            "dist\SteamyLAN\WinDivert.dll" `
+            -Force
+
+          Copy-Item `
+            "third_party\windivert\x64\WinDivert64.sys" `
+            "dist\SteamyLAN\WinDivert64.sys" `
+            -Force
+
+          if (
+            -not (Test-Path "dist\SteamyLAN\WinDivert.dll") -or
+            -not (Test-Path "dist\SteamyLAN\WinDivert64.sys")
+          ) {
+            throw "PyInstaller completed without the WinDivert runtime"
           }
 
           Write-Host "Building SteamyLAN updater..."
@@ -206,13 +218,12 @@ jobs:
             throw "PyInstaller did not create SteamyLANUpdate.exe"
           }
 
-          # Put updater directly into the application directory.
           Copy-Item `
             "dist\SteamyLANUpdate.exe" `
             "dist\SteamyLAN\SteamyLANUpdate.exe" `
             -Force
 
-          # Keep the official Steamworks DLL directly beside SteamyLAN.exe.
+          # Keep the official Steam DLL directly beside the EXE.
           Copy-Item `
             "steam_api64.dll" `
             "dist\SteamyLAN\steam_api64.dll" `
@@ -229,8 +240,8 @@ jobs:
           $version = "${{ steps.version.outputs.version }}"
           $asset = "release\SteamyLAN_v$version.zip"
 
-          # No runtime trimming is performed.
-          # The complete PyInstaller output is packaged as-is.
+          # No trimming or package_release.py processing.
+          # Package the complete PyInstaller output exactly as built.
           New-Item `
             -ItemType Directory `
             -Force `
@@ -247,6 +258,13 @@ jobs:
 
           if (-not (Test-Path "dist\SteamyLAN\SteamyLANUpdate.exe")) {
             throw "Build folder is missing SteamyLANUpdate.exe"
+          }
+
+          if (
+            -not (Test-Path "dist\SteamyLAN\WinDivert.dll") -or
+            -not (Test-Path "dist\SteamyLAN\WinDivert64.sys")
+          ) {
+            throw "Build folder is missing the WinDivert runtime"
           }
 
           Write-Host "Creating $asset from the complete PyInstaller build..."
@@ -295,8 +313,8 @@ jobs:
           Write-Host "SHA256:"
           Write-Host "  $hash"
 
-          # If this tag already exists, replace its assets.
-          # Otherwise create a new GitHub Release.
+          # Re-running the same Actions run keeps the same run number/tag.
+          # Replace the existing assets instead of creating duplicates.
           gh release view "$env:RELEASE_TAG" *> $null
 
           if ($LASTEXITCODE -eq 0) {

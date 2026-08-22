@@ -19,6 +19,7 @@ from .constants import APP_NAME, DEFAULT_APP_ID
 class Preferences:
     auto_allow_friends: bool = True
     auto_accept_ports: bool = True
+    lan_discovery_compatibility: bool = False
     keep_in_tray: bool = True
     notifications: bool = True
     start_with_computer: bool = False
