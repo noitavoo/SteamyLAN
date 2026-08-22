@@ -24,7 +24,10 @@ Open **Lobbies** and select a server, accept a Steam invite, or paste a SteamyLA
 
 Once connected, SteamyLAN displays the local `localhost:<port>` address to use in the game.
 
-##### The **Server** page shows each member's live P2P state. A connection is ready when it reports **P2P online**; **P2P connecting** means Steam is still finding a direct or relay route, and **P2P no response** means SteamyLAN is retrying the peer session.
+## Notes
+SteamyLAN uses the Spacewar appid to function.
+
+The **Server** page shows each member's live P2P state. A connection is ready when it reports **P2P online**; **P2P connecting** means Steam is still finding a direct or relay route, and **P2P no response** means SteamyLAN is retrying the peer session.
 
 ## Requirements
 
