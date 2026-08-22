@@ -4,7 +4,7 @@
 
 <br clear="left"/>
 
-SteamyLAN enables you to play LAN games with your friends! Create game servers with other Steam users without router port forwarding.
+SteamyLAN enables you to play LAN games with your friends! Create game servers with other Steam users without router port forwarding. Currently all builds are experimental. The program is still in development.
 [Download the latest SteamyLAN (Windows 64bit)](https://github.com/noitavoo/SteamyLAN/releases/latest)
 
 ### Screenshots
