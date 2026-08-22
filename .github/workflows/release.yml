@@ -9,6 +9,7 @@ on:
       - 'SteamyLan/**/*.py'
       - 'run.py'
       - 'tools/update_helper.py'
+      - 'tools/package_release.py'
       - 'requirements.txt'
       - 'requirements-build.txt'
       - 'pyproject.toml'
@@ -240,40 +241,13 @@ jobs:
           $version = "${{ steps.version.outputs.version }}"
           $asset = "release\SteamyLAN_v$version.zip"
 
-          # No trimming or package_release.py processing.
-          # Package the complete PyInstaller output exactly as built.
-          New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path "release" |
-            Out-Null
+          # Use the tested release packager so the archive layout and
+          # versioned asset name stay in sync with the release tooling.
+          python tools/package_release.py --version "$version"
 
-          if (-not (Test-Path "dist\SteamyLAN\SteamyLAN.exe")) {
-            throw "Build folder is missing SteamyLAN.exe"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
           }
-
-          if (-not (Test-Path "dist\SteamyLAN\steam_api64.dll")) {
-            throw "Build folder is missing steam_api64.dll"
-          }
-
-          if (-not (Test-Path "dist\SteamyLAN\SteamyLANUpdate.exe")) {
-            throw "Build folder is missing SteamyLANUpdate.exe"
-          }
-
-          if (
-            -not (Test-Path "dist\SteamyLAN\WinDivert.dll") -or
-            -not (Test-Path "dist\SteamyLAN\WinDivert64.sys")
-          ) {
-            throw "Build folder is missing the WinDivert runtime"
-          }
-
-          Write-Host "Creating $asset from the complete PyInstaller build..."
-
-          Compress-Archive `
-            -Path "dist\SteamyLAN\*" `
-            -DestinationPath $asset `
-            -CompressionLevel Optimal `
-            -Force
 
           if (-not (Test-Path $asset)) {
             throw "Release ZIP was not created: $asset"
